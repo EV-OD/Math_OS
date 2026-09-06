@@ -183,6 +183,28 @@ typedef __builtin_va_list va_list;
 #define va_arg(ap, type) __builtin_va_arg(ap, type)
 #define va_end(ap) __builtin_va_end(ap)
 
+static char *emit_int(char *p, int val, int base, int width, char pad) {
+    char buf[12];
+    itoa(val, buf, base);
+    int len = strlen(buf);
+    if (width > len) {
+        int npad = width - len;
+        if (buf[0] == '-' && pad == '0') {
+            *p++ = '-';
+            for (int i = 0; i < npad; i++) *p++ = '0';
+            const char *b = buf + 1;
+            while (*b) *p++ = *b++;
+            return p;
+        }
+        for (int i = 0; i < npad; i++) *p++ = pad;
+    }
+    {
+        const char *b = buf;
+        while (*b) *p++ = *b++;
+    }
+    return p;
+}
+
 /* sprintf: Implementation supporting %s, %d, %x, and %c */
 int sprintf(char *str, const char *format, ...)
 {
@@ -195,6 +217,10 @@ int sprintf(char *str, const char *format, ...)
     while (*f != '\0') {
         if (*f == '%') {
             f++;
+            char pad = ' ';
+            int width = 0;
+            if (*f == '0') { pad = '0'; f++; }
+            while (*f >= '0' && *f <= '9') { width = width * 10 + (*f - '0'); f++; }
             switch (*f) {
                 case 'c': {
                     char c = (char)va_arg(ap, int);
@@ -203,22 +229,12 @@ int sprintf(char *str, const char *format, ...)
                 }
                 case 'd': {
                     int d = va_arg(ap, int);
-                    char buf[12];
-                    itoa(d, buf, 10);
-                    char *b = buf;
-                    while (*b != '\0') {
-                        *p++ = *b++;
-                    }
+                    p = emit_int(p, d, 10, width, pad);
                     break;
                 }
                 case 'x': {
                     int x = va_arg(ap, int);
-                    char buf[12];
-                    itoa(x, buf, 16);
-                    char *b = buf;
-                    while (*b != '\0') {
-                        *p++ = *b++;
-                    }
+                    p = emit_int(p, x, 16, width, pad);
                     break;
                 }
                 case 's': {
@@ -259,6 +275,10 @@ int vsprintf(char *str, const char *format, __builtin_va_list ap)
     while (*f != '\0') {
         if (*f == '%') {
             f++;
+            char pad = ' ';
+            int width = 0;
+            if (*f == '0') { pad = '0'; f++; }
+            while (*f >= '0' && *f <= '9') { width = width * 10 + (*f - '0'); f++; }
             switch (*f) {
                 case 'c': {
                     char c = (char)__builtin_va_arg(ap, int);
@@ -267,26 +287,17 @@ int vsprintf(char *str, const char *format, __builtin_va_list ap)
                 }
                 case 'd': {
                     int d = __builtin_va_arg(ap, int);
-                    char buf[12];
-                    itoa(d, buf, 10);
-                    char *b = buf;
-                    while (*b) *p++ = *b++;
+                    p = emit_int(p, d, 10, width, pad);
                     break;
                 }
                 case 'u': {
                     unsigned int u = __builtin_va_arg(ap, unsigned int);
-                    char buf[12];
-                    itoa((int)u, buf, 10);
-                    char *b = buf;
-                    while (*b) *p++ = *b++;
+                    p = emit_int(p, (int)u, 10, width, pad);
                     break;
                 }
                 case 'x': {
                     int x = __builtin_va_arg(ap, int);
-                    char buf[12];
-                    itoa(x, buf, 16);
-                    char *b = buf;
-                    while (*b) *p++ = *b++;
+                    p = emit_int(p, x, 16, width, pad);
                     break;
                 }
                 case 's': {

@@ -13,5 +13,16 @@ void draw_string(char *c);
 void set_cursor(uint32_t x, uint32_t y);
 void move_cursor_text();
 void newline();
+void backspace();
+void display_clear(void);
+void display_scroll_up(void);
+void display_scroll_down(void);
+void display_set_region(uint32_t x0, uint32_t top, uint32_t x1, uint32_t bot);
+void display_set_fg(uint32_t c);
+void display_set_bg(uint32_t c);
+void display_get_cursor(uint32_t *x, uint32_t *y);
+uint32_t display_width(void);
+uint32_t display_height(void);
+void display_text_at(uint32_t x, uint32_t y, char *s);
 
 #endif /* DISPLAY_H */

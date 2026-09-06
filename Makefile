@@ -22,6 +22,8 @@ OBJS = $(ASM_OBJS) $(C_OBJS)
 
 KERNEL = mykernel.bin
 ISO = myos.iso
+LOG_DIR = logs
+LOG_FILE = $(LOG_DIR)/os.log
 
 all: $(ISO)
 
@@ -44,9 +46,14 @@ $(ISO): $(KERNEL)
 	grub-mkrescue -o $(ISO) isodir
 
 run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -device virtio-gpu-pci
+	qemu-system-i386 -cdrom $(ISO) -device virtio-gpu-pci -chardev stdio,id=s0,signal=off,mux=on -serial chardev:s0
+
+run-headless: $(ISO)
+	mkdir -p $(LOG_DIR)
+	: > $(LOG_FILE)
+	qemu-system-i386 -cdrom $(ISO) -device virtio-gpu-pci -serial file:$(LOG_FILE) -display none
 
 clean:
 	rm -rf $(BUILD_DIR) $(KERNEL) $(ISO)
 	rm -rf isodir
-.PHONY: all run clean
+.PHONY: all run run-headless clean
