@@ -14,6 +14,7 @@
 #include <user_progs.h>
 #include <gpu.h>
 #include <ui.h>
+#include <tmux.h>
 
 static void kernel_init(multiboot_info_t* mb_info){
   log_init();
@@ -36,7 +37,6 @@ static void kernel_init(multiboot_info_t* mb_info){
   timer_init(100);
   log_debug("timer ready");
   ui_chrome();
-  process_create(statusd, "statusd", 0);
 }
 
 void kernel_main(uint32_t* multiboot_info_addr){
@@ -46,6 +46,6 @@ void kernel_main(uint32_t* multiboot_info_addr){
   process_start();
   log_info("sched: started");
   __asm__ volatile("sti");
-  shell_run();
+  tmux_run();
   while(1) __asm__ volatile("hlt");
 }

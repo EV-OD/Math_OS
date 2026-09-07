@@ -25,4 +25,11 @@ uint32_t display_width(void);
 uint32_t display_height(void);
 void display_text_at(uint32_t x, uint32_t y, char *s);
 
-#endif /* DISPLAY_H */
+#define DISPLAY_MAX_CONSOLES 8
+void display_select(int id);
+void display_create(int id, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
+void display_render(int id);
+void display_render_all(void);
+int display_current(void);
+
+#endif
