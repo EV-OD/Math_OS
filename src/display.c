@@ -36,6 +36,9 @@ typedef struct {
 static console_t consoles[DISPLAY_MAX_CONSOLES];
 static int cur_id = 0;
 static console_t *cur = &consoles[0];
+static uint32_t live_top(void);
+static void ensure_live(void);
+static void render_window(uint32_t top);
 static multiboot_info_t* mb_info = NULL;
 static uint32_t *ui_backbuf = 0;
 static int ui_double_buffered = 0;
@@ -134,27 +137,7 @@ void display_render(int id){
         if ((uint32_t)cur->view_off > top) cur->view_off = top;
         top -= cur->view_off;
     }
-    for (uint32_t r = 0; r < cur->vis_rows; r++) {
-        uint32_t gr = top + r;
-        for (uint32_t c = 0; c < cur->ncols; c++) {
-            char ch = (gr < MAX_ROWS) ? cur->grid[gr][c] : ' ';
-            uint8_t bmp[FONT_H * FONT_BPR];
-            get_font_bitmap(ch, bmp);
-            for (int i = 0; i < FONT_H; i++) {
-                for (int b = 0; b < FONT_BPR; b++) {
-                    uint8_t bits = bmp[i * FONT_BPR + b];
-                    for (int j = 0; j < 8; j++) {
-                        int px = b * 8 + j;
-                        if (px >= FONT_W) break;
-                        uint32_t col = (bits << j) & 0x80 ? cur->fg : cur->bg;
-                        draw_pixel(cur->region_x0 + c * CELL_W + px, cur->region_top + r * LINE_H + i, col);
-                    }
-                }
-            }
-        }
-    }
-    cur->cursor_x = cur->region_x0 + cur->cur_c * CELL_W;
-    cur->cursor_y = (cur->cur_r >= top) ? cur->region_top + (cur->cur_r - top) * LINE_H : cur->region_top;
+    render_window(top);
     display_select(prev);
 }
 
@@ -187,6 +170,22 @@ uint32_t display_height(void){ return mb_info ? mb_info->framebuffer_height : 0;
 void display_get_cursor(uint32_t *x, uint32_t *y){
     if (x) *x = cur->cursor_x;
     if (y) *y = cur->cursor_y;
+}
+void display_set_cell(uint32_t r, uint32_t c){
+    if(!mb_info) return;
+    if(r >= MAX_ROWS) r = MAX_ROWS - 1;
+    if(c >= cur->ncols) c = cur->ncols - 1;
+    cur->cur_r = r;
+    cur->cur_c = c;
+    cur->cursor_x = cur->region_x0 + c * CELL_W;
+    cur->cursor_y = cur->region_top + (r >= live_top() ? (r - live_top()) * LINE_H : 0);
+    if(cur->cursor_y + FONT_H > cur->region_bot) cur->cursor_y = cur->region_bot - LINE_H;
+}
+uint32_t display_cursor_row(void){
+    return cur->cur_r;
+}
+void display_ensure_live(void){
+    ensure_live();
 }
 void display_get_fg_bg(uint32_t *fg, uint32_t *bg){
     if(fg) *fg=cur->fg;
@@ -242,7 +241,7 @@ static uint32_t live_top(void){
 }
 
 static int cursor_on = 0;
-static unsigned cursor_blink = 0;
+#define CURSOR_W 3
 
 static void cursor_redraw_cell(void){
     if(!mb_info || cur->view_off) return;
@@ -264,17 +263,9 @@ void display_cursor_hide(void){
 
 void display_cursor_tick(void){
     if(!mb_info || cur->view_off){ cursor_on = 0; return; }
-    cursor_blink++;
-    if((cursor_blink & 31) < 16){
-        if(!cursor_on){
-            cursor_on = 1;
-            draw_rect(cur->cursor_x, cur->cursor_y, FONT_W, FONT_H, cur->fg);
-        }
-    }else{
-        if(cursor_on){
-            cursor_on = 0;
-            cursor_redraw_cell();
-        }
+    if(!cursor_on){
+        cursor_on = 1;
+        draw_rect(cur->cursor_x, cur->cursor_y, CURSOR_W, FONT_H, cur->fg);
     }
 }
 
@@ -428,6 +419,9 @@ void newline(){
     if(cur->cur_r >= MAX_ROWS){
         memmove(cur->grid, cur->grid[1], (MAX_ROWS - 1) * MAX_COLS);
         memset(cur->grid[MAX_ROWS - 1], ' ', MAX_COLS);
+        memmove(cur->fg_grid, cur->fg_grid[1], (MAX_ROWS - 1) * MAX_COLS * sizeof(uint32_t));
+        memmove(cur->bg_grid, cur->bg_grid[1], (MAX_ROWS - 1) * MAX_COLS * sizeof(uint32_t));
+        for(int c=0;c<MAX_COLS;c++){ cur->fg_grid[MAX_ROWS-1][c]=cur->fg; cur->bg_grid[MAX_ROWS-1][c]=cur->bg; }
         cur->cur_r = MAX_ROWS - 1;
     }
     cur->cursor_y = cur->cursor_y + LINE_H;

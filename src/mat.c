@@ -178,3 +178,22 @@ void cmd_fft(const char *args) {
         printf("spectrum on canvas (stays until next graph)\n");
     }
 }
+
+#define MAX_STORED 16
+static struct { int valid; int kind; char args[220]; } stored[16];
+
+void mat_remember(int cid, int kind, const char *args){
+    if(cid < 1 || cid >= MAX_STORED || !args) return;
+    stored[cid].valid = 1;
+    stored[cid].kind = kind;
+    int i = 0;
+    while(args[i] && i < 219){ stored[cid].args[i] = args[i]; i++; }
+    stored[cid].args[i] = 0;
+}
+
+int mat_recall(int cid, int *kind, char *out){
+    if(cid < 1 || cid >= MAX_STORED || !stored[cid].valid) return 0;
+    if(kind) *kind = stored[cid].kind;
+    if(out) strcpy(out, stored[cid].args);
+    return 1;
+}

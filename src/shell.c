@@ -27,7 +27,7 @@ void shell_exec(char *line) {
 
     if (strcmp(line, "help") == 0) {
         printf("cmds: help ps run <name> kill <pid> echo <t> uptime clear ctrl+c pgup/pgdn\n");
-        printf("math: calc <expr> | plot <expr> <a> <b> | fft [n]\n");
+        printf("math: calc <expr> | plot <expr> <a> <b> | fft [n] | N> autofit\n");
         printf("progs:");
         for (int i = 0; i < user_progs_count; i++)
             printf(" %s", user_progs[i].name);

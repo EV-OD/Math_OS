@@ -13,6 +13,9 @@
 #include <event.h>
 #include <font.h>
 #include <font_small.h>
+#include <mat.h>
+
+static void tmux_autofit_window(int win);
 
 #define MAX_WINDOWS 4
 #define MAX_PANES 8
@@ -39,6 +42,10 @@ typedef struct {
     int canvas_id;
     char input[256];
     int input_len;
+    int input_pos;
+    uint32_t input_row;
+    int input_maxlen;
+    int esc_state;
     int is_shell;
     uint32_t canvas_buf[1920*1080];
     int canvas_has_content;
@@ -525,6 +532,7 @@ static int tmux_resize(int dir, int delta){
                 }
                 layout_window(win);
                 tmux_render();
+                tmux_autofit_window(win);
                 return 0;
             }
         }
@@ -532,6 +540,27 @@ static int tmux_resize(int dir, int delta){
         cur=p;
     }
     return -1;
+}
+
+static void tmux_autofit_window(int win){
+    extern void cmd_plot(const char *a);
+    if(gpu_owned()) return;
+    int prev = display_current();
+    for(int i=0;i<MAX_PANES;i++){
+        if(!panes[i].active || panes[i].window!=win || !panes[i].is_canvas) continue;
+        int kind;
+        char args[220];
+        if(!mat_recall(panes[i].canvas_id, &kind, args)) continue;
+        if(kind != MAT_PLOT) continue;
+        int x,y,w,h;
+        if(tmux_get_canvas_rect(panes[i].canvas_id,&x,&y,&w,&h)) continue;
+        gpu_set_view(x,y,w,h);
+        display_select(panes[i].id);
+        cmd_plot(args);
+        mark_canvas_dirty(panes[i].canvas_id);
+    }
+    display_select(prev);
+    tmux_render();
 }
 static void tmux_new_window(void){
     int win=create_window_with_pane();
@@ -614,12 +643,15 @@ static void tmux_exec_line(pane_t *pane, char *line){
                 char tmp[256]; strncpy(tmp,rest+5,255); tmp[255]=0;
                 display_select(pane->id);
                 cmd_plot(tmp);
+                mat_remember(cid, MAT_PLOT, tmp);
                 mark_canvas_dirty(cid);
                 return;
             }else if(strncmp(rest,"fft",3)==0){
                 extern void cmd_fft(const char *a);
+                const char *fa = rest[3]?rest+4:"";
                 display_select(pane->id);
-                cmd_fft(rest[3]?rest+4:"");
+                cmd_fft(fa);
+                mat_remember(cid, MAT_FFT, fa);
                 mark_canvas_dirty(cid);
                 return;
             }else if(strncmp(rest,"grid",4)==0){
@@ -628,6 +660,16 @@ static void tmux_exec_line(pane_t *pane, char *line){
                 if(strcmp(arg,"off")==0){ canvas_grid[cid]=0; printf("canvas %d grid off\n", cid); }
                 else if(strcmp(arg,"on")==0){ canvas_grid[cid]=1; printf("canvas %d grid on\n", cid); }
                 else printf("usage: %d> grid on|off\n", cid);
+                return;
+            }else if(strncmp(rest,"autofit",7)==0 && (rest[7]==0||rest[7]==' '||rest[7]=='\t')){
+                int kind;
+                char args[220];
+                display_select(pane->id);
+                if(!mat_recall(cid, &kind, args)){ printf("canvas %d has no stored graph\n", cid); return; }
+                if(kind==MAT_PLOT) cmd_plot(args);
+                else cmd_fft(args);
+                mark_canvas_dirty(cid);
+                printf("canvas %d refit\n", cid);
                 return;
             }
         }else{
@@ -644,6 +686,7 @@ static void tmux_exec_line(pane_t *pane, char *line){
             display_select(pane->id);
             extern void cmd_plot(const char *a);
             cmd_plot(line+5);
+            mat_remember(dc, MAT_PLOT, line+5);
             mark_canvas_dirty(dc);
             return;
         }
@@ -655,7 +698,9 @@ static void tmux_exec_line(pane_t *pane, char *line){
             gpu_set_view(x,y,w,h);
             display_select(pane->id);
             extern void cmd_fft(const char *a);
-            cmd_fft(line[3]?line+4:"");
+            const char *fa = line[3]?line+4:"";
+            cmd_fft(fa);
+            mat_remember(dc, MAT_FFT, fa);
             mark_canvas_dirty(dc);
             return;
         }
@@ -686,6 +731,77 @@ void tmux_init(multiboot_info_t *mb){
     display_enable_double_buffer(1);
     tmux_render();
 }
+static void input_reset(pane_t *pane){
+    pane->input_len=0;
+    pane->input[0]=0;
+    pane->input_pos=0;
+    pane->input_maxlen=0;
+    pane->esc_state=0;
+}
+
+static void input_redraw(pane_t *pane){
+    int prev = display_current();
+    display_select(pane->id);
+    display_cursor_hide();
+    display_ensure_live();
+    pane->input_row = display_cursor_row();
+    display_set_cell(pane->input_row, 0);
+    for(int i=0;i<pane->input_maxlen+1;i++) draw_char(' ');
+    display_set_cell(pane->input_row, 0);
+    for(int i=0;i<pane->input_len;i++){
+        char s[2]={pane->input[i],0};
+        draw_string(s);
+    }
+    display_set_cell(pane->input_row, (uint32_t)pane->input_pos);
+    display_select(prev);
+}
+
+static void input_insert(pane_t *pane, char c){
+    if(pane->input_len>=250) return;
+    if(pane->input_pos<0) pane->input_pos=0;
+    if(pane->input_pos>pane->input_len) pane->input_pos=pane->input_len;
+    memmove(pane->input+pane->input_pos+1, pane->input+pane->input_pos, (unsigned)(pane->input_len-pane->input_pos));
+    pane->input[pane->input_pos]=c;
+    pane->input_len++;
+    pane->input_pos++;
+    pane->input[pane->input_len]=0;
+    if(pane->input_len>pane->input_maxlen) pane->input_maxlen=pane->input_len;
+    input_redraw(pane);
+}
+
+static void input_backspace(pane_t *pane){
+    if(pane->input_pos<=0) return;
+    if(pane->input_pos>pane->input_len) pane->input_pos=pane->input_len;
+    memmove(pane->input+pane->input_pos-1, pane->input+pane->input_pos, (unsigned)(pane->input_len-pane->input_pos));
+    pane->input_pos--;
+    pane->input_len--;
+    pane->input[pane->input_len]=0;
+    input_redraw(pane);
+}
+
+static void input_delete_at(pane_t *pane){
+    if(pane->input_pos<0) pane->input_pos=0;
+    if(pane->input_pos>=pane->input_len) return;
+    memmove(pane->input+pane->input_pos, pane->input+pane->input_pos+1, (unsigned)(pane->input_len-pane->input_pos-1));
+    pane->input_len--;
+    pane->input[pane->input_len]=0;
+    input_redraw(pane);
+}
+
+static void input_move(pane_t *pane, int delta){
+    int np=pane->input_pos+delta;
+    if(np<0) np=0;
+    if(np>pane->input_len) np=pane->input_len;
+    if(np==pane->input_pos) return;
+    pane->input_pos=np;
+    int prev = display_current();
+    display_select(pane->id);
+    display_cursor_hide();
+    display_ensure_live();
+    if(display_cursor_row()==pane->input_row) display_set_cell(pane->input_row, (uint32_t)pane->input_pos);
+    display_select(prev);
+}
+
 void tmux_run(multiboot_info_t *mb){
     tmux_init(mb);
     printf("tmux: Ctrl+b prefix | \" horiz | %%/v vert | arrows focus | Ctrl+arrows resize | x kill | c new win | n/p win | 0-9 win | canvas cmd\n");
@@ -797,8 +913,8 @@ void tmux_run(multiboot_info_t *mb){
         } else {
             log_debug("ui: prompt skip pane=%d", pane->id);
         }
-        pane->input_len=0;
-        pane->input[0]=0;
+        input_reset(pane);
+        pane->input_row = display_cursor_row();
         for(;;){
             KeyOutput batch[16];
             int n=0;
@@ -832,6 +948,30 @@ void tmux_run(multiboot_info_t *mb){
                         tmux_exec_line(pane, pane->input);
                         goto pane_break;
                     }
+                    if(pane->esc_state==1){
+                        pane->esc_state = (ch=='[') ? 2 : 0;
+                        continue;
+                    }
+                    if(pane->esc_state==2){
+                        if(ch=='D'){ pane->esc_state=0; input_move(pane,-1); }
+                        else if(ch=='C'){ pane->esc_state=0; input_move(pane,1); }
+                        else if(ch=='3'){ pane->esc_state=3; }
+                        else pane->esc_state=0;
+                        continue;
+                    }
+                    if(pane->esc_state==3){
+                        pane->esc_state=0;
+                        if(ch=='~') input_delete_at(pane);
+                        continue;
+                    }
+                    if(ch==0x1B){ pane->esc_state=1; continue; }
+                    if(ch=='\r'||ch=='\n'){
+                        draw_string("\n");
+                        pane->input[pane->input_len]=0;
+                        pane->prompt_shown=0;
+                        tmux_exec_line(pane, pane->input);
+                        goto pane_break;
+                    }
                     if(ch==0x03){
                         draw_string("^C\n");
                         pane->prompt_shown=0;
@@ -839,12 +979,11 @@ void tmux_run(multiboot_info_t *mb){
                         goto pane_break;
                     }
                     if(ch==0x7f || ch==8){
-                        if(pane->input_len>0){ pane->input_len--; pane->input[pane->input_len]=0; draw_string("\b"); }
+                        input_backspace(pane);
                         continue;
                     }
-                    if(ch>=32&&ch<127 && pane->input_len<250){
-                        pane->input[pane->input_len++]=ch; pane->input[pane->input_len]=0;
-                        char s[2]={ch,0}; draw_string(s);
+                    if(ch>=32&&ch<127){
+                        input_insert(pane, ch);
                     }
                 }
                 if(prefix && timer_now()-prefix_time>200) { prefix=0; tmux_render(); }
@@ -930,7 +1069,7 @@ void tmux_run(multiboot_info_t *mb){
                         draw_string("^C\n");
                         int pid=proc_kill_latest();
                         if(pid>=0){ char b[32]; sprintf(b,"killed pid=%d\n",pid); draw_string(b); }
-                        pane->input_len=0; pane->input[0]=0;
+                        input_reset(pane);
                         pane->prompt_shown=0;
                         goto pane_break;
                     }
@@ -943,15 +1082,15 @@ void tmux_run(multiboot_info_t *mb){
                         goto pane_break;
                     }
                     if(k.ascii=='\b'){
-                        if(pane->input_len>0){ pane->input_len--; pane->input[pane->input_len]=0; draw_string("\b"); }
+                        input_backspace(pane);
                         continue;
                     }
                     if(k.ascii=='\t') continue;
-                    if(pane->input_len<250){
-                        pane->input[pane->input_len++]=k.ascii; pane->input[pane->input_len]=0;
-                        char s[2]={k.ascii,0}; draw_string(s);
-                    }
+                    input_insert(pane, k.ascii);
                 }else{
+                    if(k.key_enum==KEY_LEFT && !ks->lctrl && !ks->rctrl && !ks->lalt && !ks->ralt){ input_move(pane,-1); continue; }
+                    if(k.key_enum==KEY_RIGHT && !ks->lctrl && !ks->rctrl && !ks->lalt && !ks->ralt){ input_move(pane,1); continue; }
+                    if(k.key_enum==KEY_DELETE){ input_delete_at(pane); continue; }
                     if(k.key_enum==KEY_ENTER){
                         draw_string("\n");
                         pane->input[pane->input_len]=0;
