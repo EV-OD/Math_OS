@@ -21,6 +21,8 @@ void display_set_region(uint32_t x0, uint32_t top, uint32_t x1, uint32_t bot);
 void display_set_fg(uint32_t c);
 void display_set_bg(uint32_t c);
 void display_get_cursor(uint32_t *x, uint32_t *y);
+void display_cursor_hide(void);
+void display_cursor_tick(void);
 uint32_t display_width(void);
 uint32_t display_height(void);
 void display_text_at(uint32_t x, uint32_t y, char *s);

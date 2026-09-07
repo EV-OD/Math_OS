@@ -241,8 +241,46 @@ static uint32_t live_top(void){
     return 0;
 }
 
+static int cursor_on = 0;
+static unsigned cursor_blink = 0;
+
+static void cursor_redraw_cell(void){
+    if(!mb_info || cur->view_off) return;
+    if(cur->cur_r >= MAX_ROWS || cur->cur_c >= MAX_COLS) return;
+    char ch = cur->grid[cur->cur_r][cur->cur_c];
+    uint32_t fg = cur->fg_grid[cur->cur_r][cur->cur_c];
+    uint32_t bg = cur->bg_grid[cur->cur_r][cur->cur_c];
+    uint32_t old_fg=cur->fg, old_bg=cur->bg;
+    cur->fg=fg; cur->bg=bg;
+    draw_glyph(ch, cur->cursor_x, cur->cursor_y);
+    cur->fg=old_fg; cur->bg=old_bg;
+}
+
+void display_cursor_hide(void){
+    if(!cursor_on) return;
+    cursor_on = 0;
+    cursor_redraw_cell();
+}
+
+void display_cursor_tick(void){
+    if(!mb_info || cur->view_off){ cursor_on = 0; return; }
+    cursor_blink++;
+    if((cursor_blink & 31) < 16){
+        if(!cursor_on){
+            cursor_on = 1;
+            draw_rect(cur->cursor_x, cur->cursor_y, FONT_W, FONT_H, cur->fg);
+        }
+    }else{
+        if(cursor_on){
+            cursor_on = 0;
+            cursor_redraw_cell();
+        }
+    }
+}
+
 static void render_window(uint32_t top){
     if(mb_info == NULL) return;
+    cursor_on = 0;
     for (uint32_t r = 0; r < cur->vis_rows; r++){
         uint32_t gr = top + r;
         for (uint32_t c = 0; c < cur->ncols; c++){
@@ -307,6 +345,7 @@ static void scroll_up(void){
 void draw_char(char c){
     ensure_live();
     if(mb_info == NULL) return;
+    cursor_on = 0;
     cur->grid[cur->cur_r][cur->cur_c] = c;
     cur->fg_grid[cur->cur_r][cur->cur_c] = cur->fg;
     cur->bg_grid[cur->cur_r][cur->cur_c] = cur->bg;
@@ -323,6 +362,7 @@ void draw_char(char c){
 void backspace(){
     ensure_live();
     if(mb_info == NULL) return;
+    if(cursor_on){ cursor_on = 0; cursor_redraw_cell(); }
     uint32_t step = CELL_W;
     if(cur->cursor_x >= cur->region_x0 + step && cur->cur_c > 0){
         cur->cursor_x -= step;
@@ -381,6 +421,7 @@ void move_cursor_text(){
 
 void newline(){
     ensure_live();
+    if(cursor_on){ cursor_on = 0; cursor_redraw_cell(); }
     cur->cursor_x = cur->region_x0;
     cur->cur_c = 0;
     cur->cur_r++;
@@ -400,6 +441,7 @@ void newline(){
 
 void display_clear(void){
     if(mb_info == NULL) return;
+    cursor_on = 0;
     memset(cur->grid, ' ', sizeof(cur->grid));
     for(int r=0;r<MAX_ROWS;r++) for(int c=0;c<MAX_COLS;c++){ cur->fg_grid[r][c]=cur->fg; cur->bg_grid[r][c]=cur->bg; }
     cur->cur_r = 0;

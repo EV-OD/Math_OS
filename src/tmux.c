@@ -224,6 +224,7 @@ static void render_pane_chrome(int is_focused, pane_t *p){
 }
 static void tmux_render(void){
     uint32_t W=display_width(), H=display_height();
+    display_cursor_hide();
     log_debug("ui: render win=%d foc=%d", cur_window, windows[cur_window].focused);
     for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==cur_window && panes[i].is_canvas && panes[i].canvas_has_content) canvas_save(&panes[i]);
     draw_rect(0,0,W,H-BAR_H,0x0B1020);
@@ -847,6 +848,7 @@ void tmux_run(multiboot_info_t *mb){
                     }
                 }
                 if(prefix && timer_now()-prefix_time>200) { prefix=0; tmux_render(); }
+                display_cursor_tick();
                 display_present();
                 __asm__ volatile("hlt");
             }
@@ -929,11 +931,13 @@ void tmux_run(multiboot_info_t *mb){
                         int pid=proc_kill_latest();
                         if(pid>=0){ char b[32]; sprintf(b,"killed pid=%d\n",pid); draw_string(b); }
                         pane->input_len=0; pane->input[0]=0;
+                        pane->prompt_shown=0;
                         goto pane_break;
                     }
                     if(k.ascii=='\n'||k.ascii=='\r'){
                         draw_string("\n");
                         pane->input[pane->input_len]=0;
+                        pane->prompt_shown=0;
                         char linecopy[256]; strcpy(linecopy,pane->input);
                         tmux_exec_line(pane, linecopy);
                         goto pane_break;
