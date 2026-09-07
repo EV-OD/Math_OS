@@ -14,6 +14,7 @@
 #include <font.h>
 #include <font_small.h>
 #include <mat.h>
+#include <calc.h>
 
 static void tmux_autofit_window(int win);
 
@@ -51,6 +52,7 @@ typedef struct {
     int canvas_has_content;
     int canvas_w, canvas_h;
     int prompt_shown;
+    int sticky_cid;
 } pane_t;
 
 typedef struct {
@@ -118,7 +120,7 @@ static int next_canvas = 1;
 static int default_canvas = 0;
 static int prefix = 0;
 static uint32_t prefix_time = 0;
-static int canvas_grid[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
+
 
 static int alloc_node(void){
     for(int i=0;i<MAX_NODES;i++) if(!nodes[i].used){ nodes[i].used=1; nodes[i].is_leaf=1; nodes[i].pane_id=-1; nodes[i].a=nodes[i].b=-1; nodes[i].parent=-1; nodes[i].ratio=128; return i; }
@@ -315,6 +317,7 @@ static int create_pane_for_window(int win){
     panes[pid].is_shell=1;
     panes[pid].prompt_shown=0;
     panes[pid].canvas_has_content=0;
+    panes[pid].sticky_cid=0;
     display_create(pid, 0,0, 100,100);
     widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100,0);
     if(wd){
@@ -370,6 +373,29 @@ int tmux_first_canvas_id(void){
         if(!best || panes[i].canvas_id<best) best=panes[i].canvas_id;
     }
     return best;
+}
+static int resolve_canvas(pane_t *pane){
+    if(pane && pane->sticky_cid && tmux_has_canvas(pane->sticky_cid))
+        return pane->sticky_cid;
+    int dc = default_canvas ? default_canvas : tmux_first_canvas_id();
+    if(dc && tmux_has_canvas(dc)) return dc;
+    return 0;
+}
+static int is_alpha_us(char c){
+    return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='_';
+}
+static int is_alnum_us(char c){
+    return is_alpha_us(c)||(c>='0'&&c<='9');
+}
+static int is_call_syntax(const char *line){
+    if(!is_alpha_us(line[0]) && line[0]!='_') return 0;
+    int i = 0;
+    while(is_alnum_us(line[i]) || line[i]=='_') i++;
+    if(line[i] != '(') return 0;
+    int len = strlen(line);
+    while(len > 0 && (line[len-1]==' '||line[len-1]=='\t')) len--;
+    if(len <= 0 || line[len-1] != ')') return 0;
+    return 1;
 }
 int tmux_canvas_count(void){
     int n=0;
@@ -446,7 +472,7 @@ static int tmux_split(int vertical){
     nodes[nb].used=1; nodes[nb].is_leaf=1; nodes[nb].pane_id=new_pane; nodes[nb].parent=leaf; nodes[nb].a=nodes[nb].b=-1;
     panes[new_pane].id=new_pane; panes[new_pane].active=1; panes[new_pane].window=win;
     panes[new_pane].is_canvas=0; panes[new_pane].canvas_id=0; panes[new_pane].input_len=0; panes[new_pane].input[0]=0;
-    panes[new_pane].prompt_shown=0; panes[new_pane].canvas_has_content=0;
+    panes[new_pane].prompt_shown=0; panes[new_pane].canvas_has_content=0; panes[new_pane].sticky_cid=0;
     display_create(new_pane, 0,0,100,100);
     widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100,0);
     if(wd){ wd->id=new_pane; pane_widgets[new_pane]=wd; if(window_roots[win]) widget_add_child(window_roots[win], wd); }
@@ -543,21 +569,17 @@ static int tmux_resize(int dir, int delta){
 }
 
 static void tmux_autofit_window(int win){
-    extern void cmd_plot(const char *a);
     if(gpu_owned()) return;
     int prev = display_current();
     for(int i=0;i<MAX_PANES;i++){
         if(!panes[i].active || panes[i].window!=win || !panes[i].is_canvas) continue;
-        int kind;
-        char args[220];
-        if(!mat_recall(panes[i].canvas_id, &kind, args)) continue;
-        if(kind != MAT_PLOT) continue;
         int x,y,w,h;
         if(tmux_get_canvas_rect(panes[i].canvas_id,&x,&y,&w,&h)) continue;
         gpu_set_view(x,y,w,h);
         display_select(panes[i].id);
-        cmd_plot(args);
-        mark_canvas_dirty(panes[i].canvas_id);
+        mat_set_target(panes[i].canvas_id);
+        if(mat_refit_plot(panes[i].canvas_id) == 0)
+            mark_canvas_dirty(panes[i].canvas_id);
     }
     display_select(prev);
     tmux_render();
@@ -623,7 +645,10 @@ static void tmux_exec_line(pane_t *pane, char *line){
         display_select(pane->id);
         printf("win %d panes %d focused %d\n", cur_window, windows[cur_window].pane_count, windows[cur_window].focused);
         for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==cur_window){
-            printf(" pane %d %s %s %dx%d @%d,%d\n", panes[i].id, panes[i].is_canvas?"canvas":"shell", panes[i].id==windows[cur_window].focused?"*":" ", panes[i].w, panes[i].h, panes[i].x, panes[i].y);
+            char st[8];
+            if(panes[i].sticky_cid) sprintf(st, "c%d", panes[i].sticky_cid);
+            else st[0] = 0;
+            printf(" pane %d %s %s%s %dx%d @%d,%d\n", panes[i].id, panes[i].is_canvas?"canvas":"shell", panes[i].id==windows[cur_window].focused?"*":" ", st, panes[i].w, panes[i].h, panes[i].x, panes[i].y);
         }
         return;
     }
@@ -632,78 +657,204 @@ static void tmux_exec_line(pane_t *pane, char *line){
         for(int i=0;i<MAX_WINDOWS;i++) if(windows[i].active) printf(" win %d %s panes %d focused %d\n", i, i==cur_window?"*":" ", windows[i].pane_count, windows[i].focused);
         return;
     }
+    if(strcmp(line,"#")==0){
+        pane->sticky_cid = 0;
+        display_select(pane->id);
+        printf("sticky canvas cleared\n");
+        return;
+    }
+    {
+        int n = 0, i = 0;
+        while(line[i]>='0'&&line[i]<='9'){ n = n*10 + line[i]-'0'; i++; }
+        if(i > 0 && line[i]=='#' && line[i+1]==0 && tmux_has_canvas(n)){
+            pane->sticky_cid = n;
+            display_select(pane->id);
+            printf("shell sticky to canvas %d\n", n);
+            return;
+        }
+    }
     int cid; const char *rest;
     if(tmux_parse_canvas_prefix(line, &cid, &rest)){
         if(tmux_has_canvas(cid)){
             int x,y,w,h;
             tmux_get_canvas_rect(cid,&x,&y,&w,&h);
             gpu_set_view(x,y,w,h);
+            mat_set_target(cid);
             if(strncmp(rest,"plot ",5)==0){
                 extern void cmd_plot(const char *a);
                 char tmp[256]; strncpy(tmp,rest+5,255); tmp[255]=0;
                 display_select(pane->id);
                 cmd_plot(tmp);
-                mat_remember(cid, MAT_PLOT, tmp);
                 mark_canvas_dirty(cid);
                 return;
-            }else if(strncmp(rest,"fft",3)==0){
+            }else if(strncmp(rest,"fft",3)==0 && (rest[3]==0||rest[3]==' '||rest[3]=='\t')){
                 extern void cmd_fft(const char *a);
-                const char *fa = rest[3]?rest+4:"";
                 display_select(pane->id);
-                cmd_fft(fa);
-                mat_remember(cid, MAT_FFT, fa);
+                cmd_fft(rest[3]?rest+4:"");
+                mark_canvas_dirty(cid);
+                return;
+            }else if(strcmp(rest,"freq")==0){
+                extern void cmd_freq(const char *a);
+                display_select(pane->id);
+                cmd_freq("");
                 mark_canvas_dirty(cid);
                 return;
             }else if(strncmp(rest,"grid",4)==0){
                 const char *arg=rest+4;
                 while(*arg==' '||*arg=='\t') arg++;
-                if(strcmp(arg,"off")==0){ canvas_grid[cid]=0; printf("canvas %d grid off\n", cid); }
-                else if(strcmp(arg,"on")==0){ canvas_grid[cid]=1; printf("canvas %d grid on\n", cid); }
+                display_select(pane->id);
+                if(strcmp(arg,"off")==0){ mat_grid(cid,0); printf("canvas %d grid off\n", cid); }
+                else if(strcmp(arg,"on")==0){ mat_grid(cid,1); printf("canvas %d grid on\n", cid); }
                 else printf("usage: %d> grid on|off\n", cid);
                 return;
             }else if(strncmp(rest,"autofit",7)==0 && (rest[7]==0||rest[7]==' '||rest[7]=='\t')){
-                int kind;
-                char args[220];
                 display_select(pane->id);
-                if(!mat_recall(cid, &kind, args)){ printf("canvas %d has no stored graph\n", cid); return; }
-                if(kind==MAT_PLOT) cmd_plot(args);
-                else cmd_fft(args);
+                if(!mat_has_graph(cid)){ printf("canvas %d has no stored graph\n", cid); return; }
+                mat_view_default(cid);
                 mark_canvas_dirty(cid);
                 printf("canvas %d refit\n", cid);
+                return;
+            }else if(strcmp(rest,"z+")==0){
+                display_select(pane->id);
+                mat_zoom(cid, 2.0f);
+                mark_canvas_dirty(cid);
+                return;
+            }else if(strcmp(rest,"z-")==0){
+                display_select(pane->id);
+                mat_zoom(cid, 0.5f);
+                mark_canvas_dirty(cid);
+                return;
+            }else if(strncmp(rest,"z<<",3)==0){
+                const char *arg=rest+3;
+                while(*arg==' '||*arg=='\t') arg++;
+                float n = 0;
+                int err = 0;
+                if(*arg) { n = calc_eval(arg, &err); if(err) n = 0; }
+                display_select(pane->id);
+                if(*arg && err) { printf("z<<: bad number\n"); return; }
+                if(!*arg) { float a,b; mat_view_get(cid,&a,&b); n = (b-a)*0.1f; }
+                mat_pan(cid, -n);
+                mark_canvas_dirty(cid);
+                return;
+            }else if(strncmp(rest,"z>>",3)==0){
+                const char *arg=rest+3;
+                while(*arg==' '||*arg=='\t') arg++;
+                float n = 0;
+                int err = 0;
+                if(*arg) { n = calc_eval(arg, &err); if(err) n = 0; }
+                display_select(pane->id);
+                if(*arg && err) { printf("z>>: bad number\n"); return; }
+                if(!*arg) { float a,b; mat_view_get(cid,&a,&b); n = (b-a)*0.1f; }
+                mat_pan(cid, n);
+                mark_canvas_dirty(cid);
+                return;
+            }else{
+                extern void cmd_calc(const char *a);
+                display_select(pane->id);
+                cmd_calc(rest);
                 return;
             }
         }else{
             display_select(pane->id);
-            printf("no canvas %d\n", cid);
+            int need_cvs = !strncmp(rest,"plot ",5) ||
+                (!strncmp(rest,"fft",3)&&(rest[3]==0||rest[3]==' '||rest[3]=='\t')) ||
+                !strcmp(rest,"freq") ||
+                !strncmp(rest,"grid",4) ||
+                (!strncmp(rest,"autofit",7)&&(rest[7]==0||rest[7]==' '||rest[7]=='\t')) ||
+                !strcmp(rest,"z+") || !strcmp(rest,"z-") ||
+                !strncmp(rest,"z<<",3) || !strncmp(rest,"z>>",3);
+            if(need_cvs){
+                printf("no canvas %d\n", cid);
+            }else{
+                extern void cmd_calc(const char *a);
+                cmd_calc(rest);
+            }
             return;
         }
     }
     if(strncmp(line,"plot ",5)==0){
-        int dc = default_canvas ? default_canvas : tmux_first_canvas_id();
-        if(dc && tmux_has_canvas(dc)){
+        int dc = resolve_canvas(pane);
+        if(dc){
             int x,y,w,h; tmux_get_canvas_rect(dc,&x,&y,&w,&h);
             gpu_set_view(x,y,w,h);
             display_select(pane->id);
             extern void cmd_plot(const char *a);
+            mat_set_target(dc);
             cmd_plot(line+5);
-            mat_remember(dc, MAT_PLOT, line+5);
             mark_canvas_dirty(dc);
+            return;
+        } else {
+            display_select(pane->id);
+            printf("plot: no canvas (make one with canvas)\n");
             return;
         }
     }
     if(strncmp(line,"fft",3)==0 && (line[3]==0||line[3]==' ')){
-        int dc = default_canvas ? default_canvas : tmux_first_canvas_id();
-        if(dc && tmux_has_canvas(dc)){
+        int dc = resolve_canvas(pane);
+        const char *fa = line[3]?line+4:"";
+        display_select(pane->id);
+        extern void cmd_fft(const char *a);
+        if(dc){
             int x,y,w,h; tmux_get_canvas_rect(dc,&x,&y,&w,&h);
             gpu_set_view(x,y,w,h);
-            display_select(pane->id);
-            extern void cmd_fft(const char *a);
-            const char *fa = line[3]?line+4:"";
+            mat_set_target(dc);
             cmd_fft(fa);
-            mat_remember(dc, MAT_FFT, fa);
+            mark_canvas_dirty(dc);
+        } else {
+            mat_set_target(0);
+            cmd_fft(fa);
+        }
+        return;
+    }
+    if(strcmp(line,"freq")==0){
+        int dc = resolve_canvas(pane);
+        display_select(pane->id);
+        extern void cmd_freq(const char *a);
+        if(dc){
+            int x,y,w,h; tmux_get_canvas_rect(dc,&x,&y,&w,&h);
+            gpu_set_view(x,y,w,h);
+            mat_set_target(dc);
+            cmd_freq("");
+            mark_canvas_dirty(dc);
+        } else {
+            mat_set_target(0);
+            cmd_freq("");
+        }
+        return;
+    }
+    {
+        int zop = 0;
+        const char *zrest = 0;
+        if(strcmp(line,"z+")==0 || strcmp(line,"z-")==0){ zop = 1; zrest = line + 1; }
+        else if(!strncmp(line,"z<<",3) || !strncmp(line,"z>>",3)){ zop = 1; zrest = line + 3; }
+        if(zop){
+            int dc = resolve_canvas(pane);
+            display_select(pane->id);
+            if(!dc){ printf("zoom: no canvas\n"); return; }
+            int x,y,w,h; tmux_get_canvas_rect(dc,&x,&y,&w,&h);
+            gpu_set_view(x,y,w,h);
+            mat_set_target(dc);
+            if(!strncmp(line,"z+",2)){ mat_zoom(dc, 2.0f); }
+            else if(!strncmp(line,"z-",2)){ mat_zoom(dc, 0.5f); }
+            else {
+                while(*zrest==' '||*zrest=='\t') zrest++;
+                float n = 0;
+                int err = 0;
+                if(*zrest){ n = calc_eval(zrest, &err); }
+                else { float a,b; mat_view_get(dc,&a,&b); n = (b-a)*0.1f; }
+                if(err){ printf("zoom: bad number\n"); return; }
+                if(!strncmp(line,"z<<",3)) mat_pan(dc, -n);
+                else mat_pan(dc, n);
+            }
             mark_canvas_dirty(dc);
             return;
         }
+    }
+    if(is_call_syntax(line)){
+        display_select(pane->id);
+        extern void cmd_calc(const char *a);
+        cmd_calc(line);
+        return;
     }
     int prev=display_current();
     display_select(pane->id);

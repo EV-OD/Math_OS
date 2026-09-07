@@ -4,10 +4,65 @@
 
 #define NVARS 32
 #define NAMELEN 16
+#define NFUNCS 16
 
 static struct { char name[NAMELEN]; float val; int used; } vars[NVARS];
 static int nvars = 0;
 static float ans_val = 0;
+
+static struct {
+    char name[NAMELEN];
+    char params[CALC_NPARAMS][NAMELEN];
+    int nparams;
+    char body[CALC_BODYLEN];
+    int used;
+} funcs[NFUNCS];
+static int call_depth = 0;
+static int last_def = 0;
+static char last_sig[64];
+
+int calc_last_was_def(void) { return last_def; }
+const char *calc_last_sig(void) { return last_sig; }
+
+static int is_builtin1(const char *n) {
+    return !strcmp(n,"sin")||!strcmp(n,"cos")||!strcmp(n,"tan")||!strcmp(n,"sqrt")||
+           !strcmp(n,"exp")||!strcmp(n,"ln")||!strcmp(n,"log")||!strcmp(n,"log10")||
+           !strcmp(n,"abs")||!strcmp(n,"floor")||!strcmp(n,"ceil");
+}
+
+static int is_builtin(const char *n) {
+    return is_builtin1(n)||!strcmp(n,"pow")||!strcmp(n,"min")||!strcmp(n,"max");
+}
+
+static int find_func(const char *name) {
+    for (int i = 0; i < NFUNCS; i++)
+        if (funcs[i].used && strcmp(funcs[i].name, name) == 0) return i;
+    return -1;
+}
+
+static void skip(const char **p);
+static float parse_expr(const char **p, int *err);
+
+static float call_user(int fi, float *argv, int argc, int *err) {
+    if (call_depth >= 16) { *err = CALC_DEPTH; return 0; }
+    static struct { char name[NAMELEN]; float val; int used; } saved[16][NVARS];
+    static int saved_n[16];
+    static float saved_ans[16];
+    int level = call_depth;
+    call_depth++;
+    memcpy(saved[level], vars, sizeof(vars));
+    saved_n[level] = nvars;
+    saved_ans[level] = ans_val;
+    for (int i = 0; i < argc; i++) calc_set_var(funcs[fi].params[i], argv[i]);
+    const char *p = funcs[fi].body;
+    float v = parse_expr(&p, err);
+    if (!*err) { skip(&p); if (*p) *err = CALC_SYNTAX; }
+    memcpy(vars, saved[level], sizeof(vars));
+    nvars = saved_n[level];
+    ans_val = saved_ans[level];
+    call_depth--;
+    return v;
+}
 
 static void skip(const char **p) {
     while (**p == ' ' || **p == '\t') (*p)++;
@@ -106,25 +161,44 @@ static float parse_primary(const char **p, int *err) {
         skip(p);
         if (**p == '(') {
             (*p)++;
-            float a = parse_expr(p, err);
-            if (*err) return 0;
+            float argv[CALC_NPARAMS];
+            int argc = 0;
             skip(p);
-            if (**p == ',') {
-                (*p)++;
-                float b = parse_expr(p, err);
-                if (*err) return 0;
-                skip(p);
-                if (**p != ')') { *err = CALC_SYNTAX; return 0; }
-                (*p)++;
-                if (strcmp(name, "pow") == 0) return k_pow(a, b);
-                if (strcmp(name, "min") == 0) return a < b ? a : b;
-                if (strcmp(name, "max") == 0) return a > b ? a : b;
-                *err = CALC_UNKNOWN;
-                return 0;
+            if (**p != ')') {
+                for (;;) {
+                    float a = parse_expr(p, err);
+                    if (*err) return 0;
+                    if (argc < CALC_NPARAMS) argv[argc] = a;
+                    argc++;
+                    skip(p);
+                    if (**p == ',') { (*p)++; continue; }
+                    break;
+                }
             }
             if (**p != ')') { *err = CALC_SYNTAX; return 0; }
             (*p)++;
-            return call1(name, a, err);
+            if (strcmp(name, "pow") == 0) {
+                if (argc != 2) { *err = CALC_SYNTAX; return 0; }
+                return k_pow(argv[0], argv[1]);
+            }
+            if (strcmp(name, "min") == 0) {
+                if (argc != 2) { *err = CALC_SYNTAX; return 0; }
+                return argv[0] < argv[1] ? argv[0] : argv[1];
+            }
+            if (strcmp(name, "max") == 0) {
+                if (argc != 2) { *err = CALC_SYNTAX; return 0; }
+                return argv[0] > argv[1] ? argv[0] : argv[1];
+            }
+            if (is_builtin1(name)) {
+                if (argc != 1) { *err = CALC_SYNTAX; return 0; }
+                return call1(name, argv[0], err);
+            }
+            {
+                int fi = find_func(name);
+                if (fi < 0) { *err = CALC_UNKNOWN; return 0; }
+                if (argc != funcs[fi].nparams) { *err = CALC_SYNTAX; return 0; }
+                return call_user(fi, argv, argc, err);
+            }
         }
         int found = 0;
         float v = calc_get_var(name, &found);
@@ -218,12 +292,78 @@ static float parse_expr(const char **p, int *err) {
 float calc_eval(const char *s, int *err) {
     const char *p = s;
     *err = CALC_OK;
+    last_def = 0;
     skip(&p);
     const char *save = p;
     char name[NAMELEN];
     if (parse_ident(&p, name)) {
         const char *q = p;
         skip(&q);
+        if (*q == '(') {
+            const char *r = q + 1;
+            char params[CALC_NPARAMS][NAMELEN];
+            int nparams = 0, ok = 1;
+            skip(&r);
+            if (*r == ')') {
+                r++;
+            } else {
+                for (;;) {
+                    char pn[NAMELEN];
+                    skip(&r);
+                    if (!parse_ident(&r, pn) || nparams >= CALC_NPARAMS) { ok = 0; break; }
+                    strcpy(params[nparams], pn);
+                    nparams++;
+                    skip(&r);
+                    if (*r == ',') { r++; continue; }
+                    break;
+                }
+                if (!ok || *r != ')') ok = 0;
+                else r++;
+            }
+            skip(&r);
+            if (ok && *r == '=' && *(r + 1) != '=') {
+                const char *body = r + 1;
+                const char *be = body;
+                skip(&be);
+                if (!*be) { *err = CALC_SYNTAX; return 0; }
+                if (is_builtin(name) || !strcmp(name, "pi") || !strcmp(name, "e") || !strcmp(name, "ans")) {
+                    *err = CALC_SYNTAX;
+                    return 0;
+                }
+                for (int i = 0; i < nparams; i++)
+                    for (int j = i + 1; j < nparams; j++)
+                        if (!strcmp(params[i], params[j])) { *err = CALC_SYNTAX; return 0; }
+                int fi = find_func(name);
+                if (fi < 0) {
+                    fi = -1;
+                    for (int i = 0; i < NFUNCS; i++)
+                        if (!funcs[i].used) { fi = i; break; }
+                    if (fi < 0) { *err = CALC_DOMAIN; return 0; }
+                }
+                strncpy(funcs[fi].name, name, NAMELEN - 1);
+                funcs[fi].name[NAMELEN - 1] = 0;
+                funcs[fi].nparams = nparams;
+                for (int i = 0; i < nparams; i++) strcpy(funcs[fi].params[i], params[i]);
+                int bi = 0;
+                while (body[bi] && bi < CALC_BODYLEN - 1) { funcs[fi].body[bi] = body[bi]; bi++; }
+                funcs[fi].body[bi] = 0;
+                funcs[fi].used = 1;
+                last_def = 1;
+                {
+                    int k = 0;
+                    while (name[k] && k < 20) { last_sig[k] = name[k]; k++; }
+                    last_sig[k++] = '(';
+                    for (int i = 0; i < nparams && k < 55; i++) {
+                        if (i) last_sig[k++] = ',';
+                        int m = 0;
+                        while (params[i][m] && k < 55) last_sig[k++] = params[i][m++];
+                    }
+                    if (k < 60) last_sig[k++] = ')';
+                    last_sig[k] = 0;
+                }
+                return 0;
+            }
+        }
         if (*q == '=' && *(q + 1) != '=') {
             p = q + 1;
             float v = parse_expr(&p, err);
@@ -280,6 +420,7 @@ const char *calc_errstr(int err) {
         case CALC_DIV0: return "division by zero";
         case CALC_UNKNOWN: return "unknown name";
         case CALC_DOMAIN: return "domain error";
+        case CALC_DEPTH: return "recursion too deep";
         default: return "error";
     }
 }

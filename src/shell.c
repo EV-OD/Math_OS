@@ -26,12 +26,21 @@ void shell_exec(char *line) {
     if (!*line) return;
 
     if (strcmp(line, "help") == 0) {
-        printf("cmds: help ps run <name> kill <pid> echo <t> uptime clear ctrl+c pgup/pgdn\n");
-        printf("math: calc <expr> | plot <expr> <a> <b> | fft [n] | N> autofit\n");
+        printf("cmds: help keys ps run <name> kill <pid> echo <t> uptime clear ctrl+c pgup/pgdn\n");
+        printf("math: calc <expr> | plot <expr> [a] [b] | fft [expr] [n] | freq | N> autofit\n");
+        printf("funcs: h(x)=sin(x) | h(2) | g(x)=h(x)/x | N# sticky canvas\n");
+        printf("view: z+ z- z<< N z>> N (prefix with N> for canvas N)\n");
         printf("progs:");
         for (int i = 0; i < user_progs_count; i++)
             printf(" %s", user_progs[i].name);
         printf("\n");
+    } else if (strcmp(line, "keys") == 0) {
+        printf("prefix Ctrl+b then:\n");
+        printf(" \" horiz split | %%/v vert split | x kill pane\n");
+        printf(" h/j/k/l or arrows: focus | H/J/K/L or Ctrl+arrows: resize\n");
+        printf(" c new window | n/p next/prev window | 0-9 select window\n");
+        printf("editing: Left/Right move, Del delete, Backspace erase\n");
+        printf("canvas: canvas | N> plot/fft/grid/autofit | N# sticky | z+/z-/z<</z>> view\n");
     } else if (strcmp(line, "ps") == 0) {
         ps_list();
     } else if (strncmp(line, "run ", 4) == 0) {

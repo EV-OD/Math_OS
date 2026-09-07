@@ -45,8 +45,15 @@ $(ISO): $(KERNEL)
 	printf 'set timeout=0\nset default=0\nmenuentry "My Bare Metal OS" {\n  multiboot /boot/$(KERNEL)\n  boot\n}\n' > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) isodir
 
+HAVE_KVM := $(shell test -c /dev/kvm && echo yes)
+ifeq ($(HAVE_KVM),yes)
+KVM_ACCEL := -accel kvm
+else
+KVM_ACCEL :=
+endif
+
 run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -device virtio-gpu-pci -chardev stdio,id=s0,signal=off,mux=on -serial chardev:s0
+	qemu-system-i386 $(KVM_ACCEL) -cdrom $(ISO) -device virtio-gpu-pci -chardev stdio,id=s0,signal=off,mux=on -serial chardev:s0
 
 run-headless: $(ISO)
 	mkdir -p $(LOG_DIR)
