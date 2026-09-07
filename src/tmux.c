@@ -11,6 +11,7 @@
 #include <widget.h>
 #include <canvas_widget.h>
 #include <event.h>
+#include <font_small.h>
 
 #define MAX_WINDOWS 4
 #define MAX_PANES 8
@@ -38,6 +39,9 @@ typedef struct {
     char input[256];
     int input_len;
     int is_shell;
+    uint32_t canvas_buf[1280*720];
+    int canvas_has_content;
+    int canvas_w, canvas_h;
 } pane_t;
 
 typedef struct {
@@ -48,6 +52,30 @@ typedef struct {
     int pane_count;
     int focused;
 } window_t;
+static multiboot_info_t *g_mb = 0;
+static void canvas_save(pane_t *p){
+    if(!p||!p->is_canvas||!g_mb) return;
+    int vx=p->x+2, vy=p->y+2, vw=p->w-4, vh=p->h-4;
+    p->canvas_w=vw; p->canvas_h=vh;
+    uint32_t *fb=(uint32_t*)(uintptr_t)g_mb->framebuffer_addr;
+    uint32_t pitch=g_mb->framebuffer_pitch;
+    for(int y=0;y<vh;y++){
+        uint32_t *src=(uint32_t*)((uint8_t*)fb + (vy+y)*pitch + vx*4);
+        memcpy(p->canvas_buf + y*1280, src, vw*4);
+    }
+    p->canvas_has_content=1;
+}
+static void canvas_restore(pane_t *p){
+    if(!p||!p->is_canvas||!p->canvas_has_content||!g_mb) return;
+    int vx=p->x+2, vy=p->y+2, vw=p->canvas_w, vh=p->canvas_h;
+    if(vw!=p->w-4 || vh!=p->h-4) return;
+    uint32_t *fb=(uint32_t*)(uintptr_t)g_mb->framebuffer_addr;
+    uint32_t pitch=g_mb->framebuffer_pitch;
+    for(int y=0;y<vh;y++){
+        uint32_t *dst=(uint32_t*)((uint8_t*)fb + (vy+y)*pitch + vx*4);
+        memcpy(dst, p->canvas_buf + y*1280, vw*4);
+    }
+}
 
 static pane_t panes[MAX_PANES];
 static window_t windows[MAX_WINDOWS];
@@ -59,6 +87,9 @@ static int next_canvas = 1;
 static int default_canvas = 0;
 static int prefix = 0;
 static uint32_t prefix_time = 0;
+static int canvas_grid[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
+static uint32_t canvas_bufs[8][640*480];
+static int canvas_bw[8], canvas_bh[8];
 
 static int alloc_node(void){
     for(int i=0;i<MAX_NODES;i++) if(!nodes[i].used){ nodes[i].used=1; nodes[i].is_leaf=1; nodes[i].pane_id=-1; nodes[i].a=nodes[i].b=-1; nodes[i].parent=-1; nodes[i].ratio=128; return i; }
@@ -150,16 +181,17 @@ static void render_pane_chrome(int is_focused, pane_t *p){
         sprintf(lab,"canvas %d", p->canvas_id);
         int prev=display_current();
         display_select(p->id);
-        int tw = (int)strlen(lab)*18;
+        int tw = (int)strlen(lab)*10;
         int sx = p->x + p->w - tw - 12;
         int sy = p->y + 6;
         uint32_t bg = is_focused ? col : 0x1A1F3A;
-        draw_rect(sx-4, sy-2, tw+8, 20, bg);
-        display_set_fg(is_focused ? 0x0B1020 : 0xE8ECF5);
-        display_set_bg(bg);
-        display_text_at(sx, sy, lab);
-        display_set_fg(0xE8ECF5);
-        display_set_bg(0x0B1020);
+        uint32_t fg = is_focused ? 0x0B1020 : 0xE8ECF5;
+        draw_rect(sx-4, sy-2, tw+8, 12, bg);
+        for(int i=0; lab[i]; i++){
+            uint8_t small[8];
+            get_font_small(lab[i], small);
+            for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(sx+i*10+cc, sy+r, fg);
+        }
         display_select(prev);
     }
 }
@@ -188,41 +220,35 @@ static void tmux_render(void){
         char tmp[16];
         sprintf(tmp," %d:%s ", i, windows[i].name);
         uint32_t bg = iscur ? 0x2BD97C : 0x1A1F3A;
-        uint32_t fg = iscur ? 0x0B1020 : 0x8A93B2;
-        int tw = (int)strlen(tmp)*18;
-        draw_rect(sx, H-BAR_H+8, tw, 24, bg);
-        int prev=display_current();
-        display_select(0);
-        display_set_fg(fg);
-        display_set_bg(bg);
-        display_text_at(sx+2, H-BAR_H+10, tmp);
-        display_set_fg(0xE8ECF5);
-        display_set_bg(0x0B1020);
-        display_select(prev);
-        sx+=tw+6;
+        uint32_t fg = iscur ? 0x0B1020 : 0xE8ECF5;
+        int tw = (int)strlen(tmp)*10;
+        draw_rect(sx, H-BAR_H+12, tw, 12, bg);
+        for(int k=0; tmp[k]; k++){
+            uint8_t small[8];
+            get_font_small(tmp[k], small);
+            for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(sx+2+k*10+cc, H-BAR_H+14+r, fg);
+        }
+        sx+=tw+10;
     }
     char extra[64];
     sprintf(extra,"panes %d", pane_count);
     int prev2=display_current();
     display_select(0);
-    display_set_fg(0x8A93B2);
-    display_set_bg(0x11162B);
-    display_text_at(sx+10, H-BAR_H+10, extra);
-    display_set_fg(0xE8ECF5);
-    display_set_bg(0x0B1020);
+    for(int k=0; extra[k]; k++){
+        uint8_t small[8];
+        get_font_small(extra[k], small);
+        for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(sx+10+k*10+cc, H-BAR_H+14+r, 0x8A93B2);
+    }
     display_select(prev2);
     if(prefix){
         const char *pfx=" PREFIX ";
-        int pw=(int)strlen(pfx)*18;
-        draw_rect(W-pw-12, H-BAR_H+8, pw, 24, 0xFFD60A);
-        int prev=display_current();
-        display_select(0);
-        display_set_fg(0x0B1020);
-        display_set_bg(0xFFD60A);
-        display_text_at(W-pw-10, H-BAR_H+10, (char*)pfx);
-        display_set_fg(0xE8ECF5);
-        display_set_bg(0x0B1020);
-        display_select(prev);
+        int pw=(int)strlen(pfx)*10;
+        draw_rect(W-pw-12, H-BAR_H+12, pw, 12, 0xFFD60A);
+        for(int k=0; pfx[k]; k++){
+            uint8_t small[8];
+            get_font_small(pfx[k], small);
+            for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(W-pw-10+k*10+cc, H-BAR_H+14+r, 0x0B1020);
+        }
     }
     display_present();
     display_enable_double_buffer(0);
@@ -369,6 +395,11 @@ static int tmux_split(int vertical){
     windows[win].focused=new_pane;
     layout_window(win);
     tmux_render();
+    int prev=display_current();
+    display_select(new_pane);
+    display_clear();
+    display_select(prev);
+    tmux_render();
     log_info("tmux: split %s win %d pane %d -> %d panes", vertical?"vert":"horiz", win, foc, windows[win].pane_count);
     return 0;
 }
@@ -455,14 +486,19 @@ static void tmux_new_window(void){
     if(win>=0){ cur_window=win; tmux_render(); }
 }
 static void tmux_switch_window(int delta){
+    for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].is_canvas && panes[i].window==cur_window) canvas_save(&panes[i]);
     int start=cur_window;
     for(int i=1;i<MAX_WINDOWS;i++){
         int w=(start+delta*i+MAX_WINDOWS)%MAX_WINDOWS;
-        if(windows[w].active){ cur_window=w; tmux_render(); return; }
+        if(windows[w].active){ cur_window=w; tmux_render(); for(int j=0;j<MAX_PANES;j++) if(panes[j].active && panes[j].is_canvas && panes[j].window==w) canvas_restore(&panes[j]); return; }
     }
 }
 static void tmux_select_window(int idx){
-    if(idx>=0&&idx<MAX_WINDOWS&&windows[idx].active){ cur_window=idx; tmux_render(); }
+    if(idx>=0&&idx<MAX_WINDOWS&&windows[idx].active){
+        for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].is_canvas && panes[i].window==cur_window) canvas_save(&panes[i]);
+        cur_window=idx; tmux_render();
+        for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].is_canvas && panes[i].window==idx) canvas_restore(&panes[i]);
+    }
 }
 static int tmux_handle_canvas(void){
     int win=cur_window;
@@ -476,10 +512,17 @@ static int tmux_handle_canvas(void){
     int vx=p->x+2, vy=p->y+2, vw=p->w-4, vh=p->h-4;
     gpu_set_view(vx,vy,vw,vh);
     gpu_clear(0x0B1020);
-    gpu_text(10,10,"canvas",0x8A93B2);
+    for(int x=0;x<vw;x+=40) gpu_line(x,0,x,vh,0x1A1F3A);
+    for(int y=0;y<vh;y+=40) gpu_line(0,y,vw,y,0x1A1F3A);
+    gpu_rect(0,0,vw,1,0x2A2E4A);
+    gpu_rect(0,vh-1,vw,1,0x2A2E4A);
+    gpu_rect(0,0,1,vh,0x2A2E4A);
+    gpu_rect(vw-1,0,1,vh,0x2A2E4A);
+    gpu_text(vw/2-40, vh/2-16, "Canvas", 0x8A93B2);
     char lab[16]; sprintf(lab,"%d", p->canvas_id);
-    gpu_text(80,10,lab,0x2BD97C);
+    gpu_text(vw/2+20, vh/2-16, lab, 0x2BD97C);
     gpu_present();
+    for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==win && !panes[i].is_canvas && i!=foc){ windows[win].focused=i; break; }
     tmux_render();
     log_info("tmux: canvas %d in pane %d win %d", p->canvas_id, foc, win);
     return 0;
@@ -517,6 +560,13 @@ static void tmux_exec_line(pane_t *pane, char *line){
                 extern void cmd_fft(const char *a);
                 display_select(pane->id);
                 cmd_fft(rest[3]?rest+4:"");
+                return;
+            }else if(strncmp(rest,"grid",4)==0){
+                const char *arg=rest+4;
+                while(*arg==' '||*arg=='\t') arg++;
+                if(strcmp(arg,"off")==0){ canvas_grid[cid]=0; printf("canvas %d grid off\n", cid); }
+                else if(strcmp(arg,"on")==0){ canvas_grid[cid]=1; printf("canvas %d grid on\n", cid); }
+                else printf("usage: %d> grid on|off\n", cid);
                 return;
             }
         }else{
