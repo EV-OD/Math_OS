@@ -118,7 +118,7 @@ static void layout_node(int idx, int x,int y,int w,int h){
 static void layout_window(int win){
     if(win<0||win>=MAX_WINDOWS||!windows[win].active) return;
     int W=display_width(), H=display_height();
-    int cx0=0, cy0=BAR_H, cx1=W, cy1=H-BAR_H;
+    int cx0=0, cy0=0, cx1=W, cy1=H-BAR_H;
     int root=windows[win].root;
     if(root>=0) layout_node(root, cx0, cy0, cx1-cx0, cy1-cy0);
     if(window_roots[win]){
@@ -162,19 +162,8 @@ static void render_pane_chrome(int is_focused, pane_t *p){
 }
 static void tmux_render(void){
     uint32_t W=display_width(), H=display_height();
-    draw_rect(0,0,W,BAR_H,0x16213E);
-    draw_rect(0,BAR_H-2,W,2,0x2BD97C);
-    int prev0=display_current();
-    display_select(0);
-    display_set_fg(0xE8ECF5);
-    display_set_bg(0x16213E);
-    display_text_at(12,4,"MyOS // tmux");
-    char wb[64];
-    sprintf(wb,"win %d/%d", cur_window, MAX_WINDOWS);
-    display_text_at(W-120,4,wb);
-    display_set_bg(0x0B1020);
-    display_select(prev0);
-    draw_rect(0,BAR_H,W,H-2*BAR_H,0x0B1020);
+    display_enable_double_buffer(1);
+    draw_rect(0,0,W,H-BAR_H,0x0B1020);
     int win = cur_window;
     int pane_count=0;
     for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==win) pane_count++;
@@ -239,6 +228,8 @@ static void tmux_render(void){
         display_set_bg(0x0B1020);
         display_select(prev);
     }
+    display_present();
+    display_enable_double_buffer(0);
 }
 static int create_pane_for_window(int win){
     int pid=alloc_pane();
@@ -252,7 +243,7 @@ static int create_pane_for_window(int win){
     panes[pid].input[0]=0;
     panes[pid].is_shell=1;
     display_create(pid, 0,0, 100,100);
-    widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100);
+    widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100,0);
     if(wd){
         wd->id = pid;
         pane_widgets[pid]=wd;
@@ -272,7 +263,7 @@ static int create_window_with_pane(void){
     windows[win].pane_count=0;
     windows[win].focused=-1;
     int W=display_width(), H=display_height();
-    widget_t *root = widget_create(WIDGET_CONTAINER, 0, BAR_H, W, H-2*BAR_H);
+    widget_t *root = widget_create(WIDGET_CONTAINER, 0, 0, W, H-BAR_H,0);
     if(root){
         root->split=SPLIT_NONE;
         window_roots[win]=root;
@@ -376,7 +367,7 @@ static int tmux_split(int vertical){
     panes[new_pane].id=new_pane; panes[new_pane].active=1; panes[new_pane].window=win;
     panes[new_pane].is_canvas=0; panes[new_pane].canvas_id=0; panes[new_pane].input_len=0; panes[new_pane].input[0]=0;
     display_create(new_pane, 0,0,100,100);
-    widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100);
+    widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100,0);
     if(wd){ wd->id=new_pane; pane_widgets[new_pane]=wd; if(window_roots[win]) widget_add_child(window_roots[win], wd); }
     windows[win].pane_count++;
     windows[win].focused=new_pane;
@@ -566,21 +557,25 @@ static void tmux_exec_line(pane_t *pane, char *line){
     display_select(prev);
     tmux_render();
 }
-void tmux_init(void){
+multiboot_info_t *tmux_mb_info=0;
+void tmux_init(multiboot_info_t *mb){
+    tmux_mb_info=mb;
     memset(panes,0,sizeof(panes));
     memset(windows,0,sizeof(windows));
     memset(nodes,0,sizeof(nodes));
     for(int i=0;i<MAX_NODES;i++) nodes[i].a=nodes[i].b=-1;
     memset(pane_widgets,0,sizeof(pane_widgets));
     memset(window_roots,0,sizeof(window_roots));
-    widget_system_init();
+    uint32_t *fb=0; uint32_t pitch=0, sw=0, sh=0;
+    if(mb){ fb=(uint32_t*)(uintptr_t)mb->framebuffer_addr; pitch=mb->framebuffer_pitch; sw=mb->framebuffer_width; sh=mb->framebuffer_height; }
+    widget_system_init(fb, pitch, sw, sh);
     canvas_widget_init();
     cur_window=0;
     create_window_with_pane();
     tmux_render();
 }
-void tmux_run(void){
-    tmux_init();
+void tmux_run(multiboot_info_t *mb){
+    tmux_init(mb);
     printf("tmux: Ctrl+b prefix | \" horiz | %%/v vert | arrows focus | Ctrl+arrows resize | x kill | c new win | n/p win | 0-9 win | canvas cmd\n");
     for(;;){
         int win=cur_window;
@@ -616,6 +611,26 @@ void tmux_run(void){
                 KeyOutput k=batch[i];
                 if(!k.pressed) continue;
                 const KeyboardState *ks=keyboard_get_state();
+                int ctrl = ks->lctrl||ks->rctrl;
+                int alt = ks->lalt||ks->ralt;
+                if(!prefix && ctrl && !alt && (k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN)){
+                    int dir=-1;
+                    if(k.key_enum==KEY_LEFT) dir=0;
+                    else if(k.key_enum==KEY_RIGHT) dir=1;
+                    else if(k.key_enum==KEY_UP) dir=2;
+                    else if(k.key_enum==KEY_DOWN) dir=3;
+                    if(dir>=0){ int nb=find_adjacent_pane(dir); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
+                    continue;
+                }
+                if(!prefix && ctrl && alt && (k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN)){
+                    int dir=-1;
+                    if(k.key_enum==KEY_LEFT) dir=0;
+                    else if(k.key_enum==KEY_RIGHT) dir=1;
+                    else if(k.key_enum==KEY_UP) dir=2;
+                    else if(k.key_enum==KEY_DOWN) dir=3;
+                    if(dir>=0) tmux_resize(dir,10);
+                    continue;
+                }
                 if((ks->lctrl||ks->rctrl) && k.is_character && (k.ascii=='b'||k.ascii=='B')){ prefix=1; prefix_time=timer_now(); continue; }
                 if(prefix){
                     prefix=0;
@@ -658,10 +673,8 @@ void tmux_run(void){
             continue;
         }
         display_select(pane->id);
-        char prompt[32];
-        sprintf(prompt,"[%d:%d] shell> ", win, foc);
         display_set_fg(0x2BD97C);
-        draw_string(prompt);
+        draw_string("shell >\n");
         display_set_fg(0xE8ECF5);
         pane->input_len=0;
         pane->input[0]=0;
@@ -719,6 +732,26 @@ void tmux_run(void){
                 KeyOutput k=batch[i];
                 if(!k.pressed) continue;
                 const KeyboardState *ks=keyboard_get_state();
+                int ctrl = ks->lctrl||ks->rctrl;
+                int alt = ks->lalt||ks->ralt;
+                if(!prefix && ctrl && !alt && (k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN)){
+                    int dir=-1;
+                    if(k.key_enum==KEY_LEFT) dir=0;
+                    else if(k.key_enum==KEY_RIGHT) dir=1;
+                    else if(k.key_enum==KEY_UP) dir=2;
+                    else if(k.key_enum==KEY_DOWN) dir=3;
+                    if(dir>=0){ int nb=find_adjacent_pane(dir); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
+                    continue;
+                }
+                if(!prefix && ctrl && alt && (k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN)){
+                    int dir=-1;
+                    if(k.key_enum==KEY_LEFT) dir=0;
+                    else if(k.key_enum==KEY_RIGHT) dir=1;
+                    else if(k.key_enum==KEY_UP) dir=2;
+                    else if(k.key_enum==KEY_DOWN) dir=3;
+                    if(dir>=0) tmux_resize(dir,10);
+                    continue;
+                }
                 if((ks->lctrl||ks->rctrl) && k.is_character && (k.ascii=='b'||k.ascii=='B')){
                     prefix=1; prefix_time=timer_now(); tmux_render(); continue;
                 }

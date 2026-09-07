@@ -14,6 +14,8 @@
 
 typedef struct {
     char grid[MAX_ROWS][MAX_COLS];
+    uint32_t fg_grid[MAX_ROWS][MAX_COLS];
+    uint32_t bg_grid[MAX_ROWS][MAX_COLS];
     uint32_t ncols;
     uint32_t vis_rows;
     uint32_t cur_r;
@@ -34,16 +36,37 @@ static console_t consoles[DISPLAY_MAX_CONSOLES];
 static int cur_id = 0;
 static console_t *cur = &consoles[0];
 static multiboot_info_t* mb_info = NULL;
+static uint32_t *ui_backbuf = 0;
+static int ui_double_buffered = 0;
+static uint32_t ui_backbuffer_storage[1280*720];
 
+void display_enable_double_buffer(int enable){
+    ui_double_buffered = enable;
+    if(enable) ui_backbuf = ui_backbuffer_storage;
+    else ui_backbuf = 0;
+}
+void display_present(void){
+    if(!ui_double_buffered || !mb_info || !ui_backbuf) return;
+    uint32_t *fb = (uint32_t*)(uintptr_t)mb_info->framebuffer_addr;
+    uint32_t pitch = mb_info->framebuffer_pitch;
+    for(uint32_t y=0;y<mb_info->framebuffer_height;y++){
+        memcpy((uint8_t*)fb + y*pitch, (uint8_t*)ui_backbuf + y*1280*4, mb_info->framebuffer_width*4);
+    }
+}
+uint32_t *display_get_backbuffer(void){ return ui_backbuf; }
+int display_is_double_buffered(void){ return ui_double_buffered; }
 void init_display(multiboot_info_t* mb_info_data){
     mb_info = mb_info_data;
+    ui_backbuf = ui_backbuffer_storage;
+    ui_double_buffered = 0;
     for (int i = 0; i < DISPLAY_MAX_CONSOLES; i++) {
         memset(consoles[i].grid, ' ', sizeof(consoles[i].grid));
+        for(int r=0;r<MAX_ROWS;r++) for(int c=0;c<MAX_COLS;c++){ consoles[i].fg_grid[r][c]=0xE8ECF5; consoles[i].bg_grid[r][c]=0x0B1020; }
         consoles[i].cur_r = 0;
         consoles[i].cur_c = 0;
         consoles[i].view_off = 0;
-        consoles[i].fg = 0xffffffff;
-        consoles[i].bg = 0x0;
+        consoles[i].fg = 0xE8ECF5;
+        consoles[i].bg = 0x0B1020;
         consoles[i].inited = 0;
     }
     cur_id = 0;
@@ -66,11 +89,12 @@ void display_create(int id, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1){
     if (id < 0 || id >= DISPLAY_MAX_CONSOLES) return;
     display_select(id);
     memset(cur->grid, ' ', sizeof(cur->grid));
+    for(int r=0;r<MAX_ROWS;r++) for(int c=0;c<MAX_COLS;c++){ cur->fg_grid[r][c]=0xE8ECF5; cur->bg_grid[r][c]=0x0B1020; }
     cur->cur_r = 0;
     cur->cur_c = 0;
     cur->view_off = 0;
-    cur->fg = 0xffffffff;
-    cur->bg = 0x0;
+    cur->fg = 0xE8ECF5;
+    cur->bg = 0x0B1020;
     cur->inited = 1;
     display_set_region(x0, y0, x1, y1);
     display_clear();
@@ -149,6 +173,10 @@ void display_get_fg_bg(uint32_t *fg, uint32_t *bg){
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if(mb_info == NULL) return;
     if (x >= mb_info->framebuffer_width || y >= mb_info->framebuffer_height) return;
+    if(ui_double_buffered && ui_backbuf){
+        ui_backbuf[y*1280 + x] = color;
+        return;
+    }
     uint32_t* pixel_addr = (uint32_t*)(
         (uint8_t*)(uintptr_t)mb_info->framebuffer_addr +
         (y * mb_info->framebuffer_pitch) +
@@ -195,7 +223,12 @@ static void render_window(uint32_t top){
         uint32_t gr = top + r;
         for (uint32_t c = 0; c < cur->ncols; c++){
             char ch = (gr < MAX_ROWS) ? cur->grid[gr][c] : ' ';
+            uint32_t fg = (gr < MAX_ROWS) ? cur->fg_grid[gr][c] : cur->fg;
+            uint32_t bg = (gr < MAX_ROWS) ? cur->bg_grid[gr][c] : cur->bg;
+            uint32_t old_fg=cur->fg, old_bg=cur->bg;
+            cur->fg=fg; cur->bg=bg;
             draw_glyph(ch, cur->region_x0 + c * CELL_W, cur->region_top + r * LINE_H);
+            cur->fg=old_fg; cur->bg=old_bg;
         }
     }
     cur->cursor_x = cur->region_x0 + cur->cur_c * CELL_W;
@@ -248,6 +281,8 @@ void draw_char(char c){
     ensure_live();
     if(mb_info == NULL) return;
     cur->grid[cur->cur_r][cur->cur_c] = c;
+    cur->fg_grid[cur->cur_r][cur->cur_c] = cur->fg;
+    cur->bg_grid[cur->cur_r][cur->cur_c] = cur->bg;
     draw_glyph(c, cur->cursor_x, cur->cursor_y);
     cur->cur_c++;
     uint32_t new_x = cur->cursor_x + CELL_W;
@@ -274,6 +309,8 @@ void backspace(){
         return;
     }
     cur->grid[cur->cur_r][cur->cur_c] = ' ';
+    cur->fg_grid[cur->cur_r][cur->cur_c] = cur->fg;
+    cur->bg_grid[cur->cur_r][cur->cur_c] = cur->bg;
     draw_rect(cur->cursor_x, cur->cursor_y, FONT_W, FONT_H, cur->bg);
 }
 
@@ -337,6 +374,7 @@ void newline(){
 void display_clear(void){
     if(mb_info == NULL) return;
     memset(cur->grid, ' ', sizeof(cur->grid));
+    for(int r=0;r<MAX_ROWS;r++) for(int c=0;c<MAX_COLS;c++){ cur->fg_grid[r][c]=cur->fg; cur->bg_grid[r][c]=cur->bg; }
     cur->cur_r = 0;
     cur->cur_c = 0;
     cur->view_off = 0;

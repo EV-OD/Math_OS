@@ -24,6 +24,10 @@ void display_get_cursor(uint32_t *x, uint32_t *y);
 uint32_t display_width(void);
 uint32_t display_height(void);
 void display_text_at(uint32_t x, uint32_t y, char *s);
+void display_enable_double_buffer(int enable);
+void display_present(void);
+uint32_t *display_get_backbuffer(void);
+int display_is_double_buffered(void);
 
 #define DISPLAY_MAX_CONSOLES 32
 void display_select(int id);

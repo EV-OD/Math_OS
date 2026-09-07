@@ -46,6 +46,6 @@ void kernel_main(uint32_t* multiboot_info_addr){
   process_start();
   log_info("sched: started");
   __asm__ volatile("sti");
-  tmux_run();
+  tmux_run(mb_info);
   while(1) __asm__ volatile("hlt");
 }

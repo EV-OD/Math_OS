@@ -2,9 +2,10 @@
 #define TMUX_H
 
 #include <stdint.h>
+#include <multiboot.h>
 
-void tmux_init(void);
-void tmux_run(void);
+void tmux_init(multiboot_info_t *mb);
+void tmux_run(multiboot_info_t *mb);
 
 int tmux_get_canvas_rect(int canvas_id, int *x, int *y, int *w, int *h);
 int tmux_first_canvas_id(void);

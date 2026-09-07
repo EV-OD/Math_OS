@@ -78,6 +78,10 @@ static uint32_t *px_addr(int x, int y) {
     if (x < 0 || y < 0 || x >= vw || y >= vh) return 0;
     uint32_t ax = (uint32_t)(vx + x);
     uint32_t ay = (uint32_t)(vy + y);
+    if(display_is_double_buffered()){
+        uint32_t *bb = display_get_backbuffer();
+        if(bb) return &bb[ay*1280 + ax];
+    }
     if (use_direct) {
         if (ax >= fb_w || ay >= fb_h) return 0;
         return (uint32_t *)((uint8_t *)(uintptr_t)fb_addr + ay * fb_pitch + ax * 4);
@@ -170,6 +174,7 @@ uint32_t gpu_stride(void) {
 }
 
 void gpu_present(void) {
+    if(display_is_double_buffered()) return;
     if (use_direct) return;
     for (int y = 0; y < vh; y++) {
         uint8_t *dst = (uint8_t *)(uintptr_t)fb_addr + (uint32_t)(vy + y) * fb_pitch + (uint32_t)vx * 4;
