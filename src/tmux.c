@@ -145,20 +145,23 @@ static void render_pane_chrome(int is_focused, pane_t *p){
     draw_rect(p->x, p->y+p->h-2, p->w, 2, col);
     draw_rect(p->x, p->y, 2, p->h, col);
     draw_rect(p->x+p->w-2, p->y, 2, p->h, col);
-    char lab[24];
-    if(p->is_canvas) sprintf(lab,"canvas %d", p->canvas_id);
-    else sprintf(lab,"shell %d", p->id);
-    int prev=display_current();
-    display_select(p->id);
-    uint32_t sx=p->x+8, sy=p->y+6;
-    uint32_t bg = is_focused ? col : 0x1A1F3A;
-    draw_rect(sx-4, sy-2, (uint32_t)strlen(lab)*18+8, 20, bg);
-    display_set_fg(is_focused ? 0x0B1020 : 0xE8ECF5);
-    display_set_bg(bg);
-    display_text_at(sx,sy,lab);
-    display_set_fg(0xE8ECF5);
-    display_set_bg(0x0B1020);
-    display_select(prev);
+    if(p->is_canvas){
+        char lab[24];
+        sprintf(lab,"canvas %d", p->canvas_id);
+        int prev=display_current();
+        display_select(p->id);
+        int tw = (int)strlen(lab)*18;
+        int sx = p->x + p->w - tw - 12;
+        int sy = p->y + 6;
+        uint32_t bg = is_focused ? col : 0x1A1F3A;
+        draw_rect(sx-4, sy-2, tw+8, 20, bg);
+        display_set_fg(is_focused ? 0x0B1020 : 0xE8ECF5);
+        display_set_bg(bg);
+        display_text_at(sx, sy, lab);
+        display_set_fg(0xE8ECF5);
+        display_set_bg(0x0B1020);
+        display_select(prev);
+    }
 }
 static void tmux_render(void){
     uint32_t W=display_width(), H=display_height();
@@ -174,13 +177,6 @@ static void tmux_render(void){
             display_render(i);
             render_pane_chrome(foc, &panes[i]);
         }else{
-            int vx=panes[i].x+2, vy=panes[i].y+2, vw=panes[i].w-4, vh=panes[i].h-4;
-            gpu_set_view(vx,vy,vw,vh);
-            gpu_clear(0x0B1020);
-            gpu_text(10,10,"canvas",0x8A93B2);
-            char lab[16]; sprintf(lab,"%d", panes[i].canvas_id);
-            gpu_text(80,10,lab,0x2BD97C);
-            gpu_present();
             render_pane_chrome(foc, &panes[i]);
         }
     }
@@ -673,8 +669,10 @@ void tmux_run(multiboot_info_t *mb){
             continue;
         }
         display_select(pane->id);
+        char prompt[32];
+        sprintf(prompt, "shell %d >\n", pane->id);
         display_set_fg(0x2BD97C);
-        draw_string("shell >\n");
+        draw_string(prompt);
         display_set_fg(0xE8ECF5);
         pane->input_len=0;
         pane->input[0]=0;
