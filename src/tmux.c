@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <ui.h>
 #include <log.h>
+#include <widget.h>
+#include <canvas_widget.h>
+#include <event.h>
 
 #define MAX_WINDOWS 4
 #define MAX_PANES 8
@@ -49,6 +52,8 @@ typedef struct {
 static pane_t panes[MAX_PANES];
 static window_t windows[MAX_WINDOWS];
 static tnode_t nodes[MAX_NODES];
+static widget_t *pane_widgets[MAX_PANES];
+static widget_t *window_roots[MAX_WINDOWS];
 static int cur_window = 0;
 static int next_canvas = 1;
 static int default_canvas = 0;
@@ -116,6 +121,23 @@ static void layout_window(int win){
     int cx0=0, cy0=BAR_H, cx1=W, cy1=H-BAR_H;
     int root=windows[win].root;
     if(root>=0) layout_node(root, cx0, cy0, cx1-cx0, cy1-cy0);
+    if(window_roots[win]){
+        window_roots[win]->x=cx0; window_roots[win]->y=cy0; window_roots[win]->w=cx1-cx0; window_roots[win]->h=cy1-cy0;
+    }
+    for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==win){
+        widget_t *wd = pane_widgets[i];
+        if(wd){
+            wd->x=panes[i].x; wd->y=panes[i].y; wd->w=panes[i].w; wd->h=panes[i].h;
+            wd->focused = (panes[i].id==windows[win].focused);
+            if(panes[i].is_canvas){
+                wd->type=WIDGET_CANVAS;
+                wd->canvas_id=panes[i].canvas_id;
+            }else{
+                wd->type=WIDGET_SHELL;
+                wd->canvas_id=0;
+            }
+        }
+    }
 }
 static void render_pane_chrome(int is_focused, pane_t *p){
     uint32_t col = p->is_canvas ? 0x2BD97C : (is_focused ? 0x2BD97C : 0x2A2E4A);
@@ -230,6 +252,14 @@ static int create_pane_for_window(int win){
     panes[pid].input[0]=0;
     panes[pid].is_shell=1;
     display_create(pid, 0,0, 100,100);
+    widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100);
+    if(wd){
+        wd->id = pid;
+        pane_widgets[pid]=wd;
+        if(window_roots[win]){
+            widget_add_child(window_roots[win], wd);
+        }
+    }
     return pid;
 }
 static int create_window_with_pane(void){
@@ -241,6 +271,12 @@ static int create_window_with_pane(void){
     sprintf(windows[win].name,"win%d",win);
     windows[win].pane_count=0;
     windows[win].focused=-1;
+    int W=display_width(), H=display_height();
+    widget_t *root = widget_create(WIDGET_CONTAINER, 0, BAR_H, W, H-2*BAR_H);
+    if(root){
+        root->split=SPLIT_NONE;
+        window_roots[win]=root;
+    }
     int node=alloc_node();
     int pane=create_pane_for_window(win);
     if(pane<0||node<0) return -1;
@@ -248,6 +284,9 @@ static int create_window_with_pane(void){
     windows[win].root=node;
     windows[win].pane_count=1;
     windows[win].focused=pane;
+    if(pane_widgets[pane] && root){
+        pane_widgets[pane]->x=0; pane_widgets[pane]->y=BAR_H; pane_widgets[pane]->w=W; pane_widgets[pane]->h=H-2*BAR_H;
+    }
     layout_window(win);
     return win;
 }
@@ -337,6 +376,8 @@ static int tmux_split(int vertical){
     panes[new_pane].id=new_pane; panes[new_pane].active=1; panes[new_pane].window=win;
     panes[new_pane].is_canvas=0; panes[new_pane].canvas_id=0; panes[new_pane].input_len=0; panes[new_pane].input[0]=0;
     display_create(new_pane, 0,0,100,100);
+    widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100);
+    if(wd){ wd->id=new_pane; pane_widgets[new_pane]=wd; if(window_roots[win]) widget_add_child(window_roots[win], wd); }
     windows[win].pane_count++;
     windows[win].focused=new_pane;
     layout_window(win);
@@ -370,6 +411,11 @@ static int tmux_kill_pane(int pid){
         gpu_set_view(0,0,display_width(),display_height());
     }
     panes[pid].active=0;
+    if(pane_widgets[pid]){
+        if(window_roots[win]) widget_remove_child(window_roots[win], pane_widgets[pid]);
+        widget_destroy(pane_widgets[pid]);
+        pane_widgets[pid]=0;
+    }
     if(was_canvas && was_cid==default_canvas){
         default_canvas=0;
         int best=0;
@@ -442,12 +488,13 @@ static int tmux_handle_canvas(void){
     if(!default_canvas) default_canvas=p->canvas_id;
     int vx=p->x+2, vy=p->y+2, vw=p->w-4, vh=p->h-4;
     gpu_set_view(vx,vy,vw,vh);
-    gpu_clear(0x040610);
-    gpu_text(10,10,"canvas",0xE8ECF5);
+    gpu_clear(0x0B1020);
+    gpu_text(10,10,"canvas",0x8A93B2);
     char lab[16]; sprintf(lab,"%d", p->canvas_id);
     gpu_text(80,10,lab,0x2BD97C);
     gpu_present();
     tmux_render();
+    log_info("tmux: canvas %d in pane %d win %d", p->canvas_id, foc, win);
     return 0;
 }
 extern void shell_exec(char *line);
@@ -524,6 +571,10 @@ void tmux_init(void){
     memset(windows,0,sizeof(windows));
     memset(nodes,0,sizeof(nodes));
     for(int i=0;i<MAX_NODES;i++) nodes[i].a=nodes[i].b=-1;
+    memset(pane_widgets,0,sizeof(pane_widgets));
+    memset(window_roots,0,sizeof(window_roots));
+    widget_system_init();
+    canvas_widget_init();
     cur_window=0;
     create_window_with_pane();
     tmux_render();

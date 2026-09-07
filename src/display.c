@@ -141,6 +141,10 @@ void display_get_cursor(uint32_t *x, uint32_t *y){
     if (x) *x = cur->cursor_x;
     if (y) *y = cur->cursor_y;
 }
+void display_get_fg_bg(uint32_t *fg, uint32_t *bg){
+    if(fg) *fg=cur->fg;
+    if(bg) *bg=cur->bg;
+}
 
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if(mb_info == NULL) return;
