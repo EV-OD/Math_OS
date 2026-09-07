@@ -20,7 +20,7 @@ static int vpX, vpY, vpW, vpH;
 static int fbW, fbH, fbStride;
 static int orgX, orgY;
 static uint32_t *cbuf;
-static float zbuf[1280 * 720];
+static float zbuf[1920 * 1080];
 
 static Vert vbuf[VBUF_MAX];
 static int vcount = 0;
@@ -173,7 +173,7 @@ void glClear(GLbitfield mask) {
                 cbuf[(y + orgY) * fbStride + (x + orgX)] = cc;
     if (mask & GL_DEPTH_BUFFER_BIT) {
         int n = fbW * fbH;
-        if (n > 1280 * 720) n = 1280 * 720;
+        if (n > 1920 * 1080) n = 1920 * 1080;
         for (int i = 0; i < n; i++) zbuf[i] = 1.0f;
     }
 }

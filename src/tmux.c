@@ -39,7 +39,7 @@ typedef struct {
     char input[256];
     int input_len;
     int is_shell;
-    uint32_t canvas_buf[1280*720];
+    uint32_t canvas_buf[1920*1080];
     int canvas_has_content;
     int canvas_w, canvas_h;
 } pane_t;
@@ -61,7 +61,7 @@ static void canvas_save(pane_t *p){
     uint32_t pitch=g_mb->framebuffer_pitch;
     for(int y=0;y<vh;y++){
         uint32_t *src=(uint32_t*)((uint8_t*)fb + (vy+y)*pitch + vx*4);
-        memcpy(p->canvas_buf + y*1280, src, vw*4);
+        memcpy(p->canvas_buf + y*1920, src, vw*4);
     }
     p->canvas_has_content=1;
 }
@@ -73,7 +73,7 @@ static void canvas_restore(pane_t *p){
     uint32_t pitch=g_mb->framebuffer_pitch;
     for(int y=0;y<vh;y++){
         uint32_t *dst=(uint32_t*)((uint8_t*)fb + (vy+y)*pitch + vx*4);
-        memcpy(dst, p->canvas_buf + y*1280, vw*4);
+        memcpy(dst, p->canvas_buf + y*1920, vw*4);
     }
 }
 
@@ -665,7 +665,7 @@ void tmux_run(multiboot_info_t *mb){
                     else if(k.key_enum==KEY_RIGHT) dir=1;
                     else if(k.key_enum==KEY_UP) dir=2;
                     else if(k.key_enum==KEY_DOWN) dir=3;
-                    if(dir>=0){ int nb=find_adjacent_pane(dir); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
+                    if(dir>=0){ int nb=find_adjacent_pane(dir); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
                     continue;
                 }
                 if(!prefix && ctrl && alt && (k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN)){
@@ -681,13 +681,13 @@ void tmux_run(multiboot_info_t *mb){
                 if(prefix){
                     prefix=0;
                     if(k.is_character){
-                        if(k.ascii=='"'||k.ascii=='s'){ tmux_split(0); continue; }
-                        else if(k.ascii=='%'||k.ascii=='v'){ tmux_split(1); continue; }
-                        else if(k.ascii=='c'){ tmux_new_window(); continue; }
-                        else if(k.ascii=='n'){ tmux_switch_window(1); continue; }
-                        else if(k.ascii=='p'){ tmux_switch_window(-1); continue; }
-                        else if(k.ascii>='0'&&k.ascii<='9'){ tmux_select_window(k.ascii-'0'); continue; }
-                        else if(k.ascii=='x'){ tmux_kill_pane(foc); continue; }
+                        if(k.ascii=='"'||k.ascii=='s'){ tmux_split(0); goto pane_break; }
+                        else if(k.ascii=='%'||k.ascii=='v'){ tmux_split(1); goto pane_break; }
+                        else if(k.ascii=='c'){ tmux_new_window(); goto pane_break; }
+                        else if(k.ascii=='n'){ tmux_switch_window(1); goto pane_break; }
+                        else if(k.ascii=='p'){ tmux_switch_window(-1); goto pane_break; }
+                        else if(k.ascii>='0'&&k.ascii<='9'){ tmux_select_window(k.ascii-'0'); goto pane_break; }
+                        else if(k.ascii=='x'){ tmux_kill_pane(foc); goto pane_break; }
                         else if(k.ascii=='h'){ int nb=find_adjacent_pane(0); if(nb>=0){ windows[win].focused=nb; tmux_render(); } continue; }
                         else if(k.ascii=='l'){ int nb=find_adjacent_pane(1); if(nb>=0){ windows[win].focused=nb; tmux_render(); } continue; }
                         else if(k.ascii=='k'){ int nb=find_adjacent_pane(2); if(nb>=0){ windows[win].focused=nb; tmux_render(); } continue; }
@@ -788,7 +788,7 @@ void tmux_run(multiboot_info_t *mb){
                     else if(k.key_enum==KEY_RIGHT) dir=1;
                     else if(k.key_enum==KEY_UP) dir=2;
                     else if(k.key_enum==KEY_DOWN) dir=3;
-                    if(dir>=0){ int nb=find_adjacent_pane(dir); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
+                    if(dir>=0){ int nb=find_adjacent_pane(dir); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
                     continue;
                 }
                 if(!prefix && ctrl && alt && (k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN)){

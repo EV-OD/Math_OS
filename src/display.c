@@ -38,7 +38,7 @@ static console_t *cur = &consoles[0];
 static multiboot_info_t* mb_info = NULL;
 static uint32_t *ui_backbuf = 0;
 static int ui_double_buffered = 0;
-static uint32_t ui_backbuffer_storage[1280*720];
+static uint32_t ui_backbuffer_storage[1920*1080];
 
 void display_enable_double_buffer(int enable){
     ui_double_buffered = enable;
@@ -50,7 +50,7 @@ void display_present(void){
     uint32_t *fb = (uint32_t*)(uintptr_t)mb_info->framebuffer_addr;
     uint32_t pitch = mb_info->framebuffer_pitch;
     for(uint32_t y=0;y<mb_info->framebuffer_height;y++){
-        memcpy((uint8_t*)fb + y*pitch, (uint8_t*)ui_backbuf + y*1280*4, mb_info->framebuffer_width*4);
+        memcpy((uint8_t*)fb + y*pitch, (uint8_t*)ui_backbuf + y*1920*4, mb_info->framebuffer_width*4);
     }
 }
 uint32_t *display_get_backbuffer(void){ return ui_backbuf; }
@@ -174,7 +174,7 @@ void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if(mb_info == NULL) return;
     if (x >= mb_info->framebuffer_width || y >= mb_info->framebuffer_height) return;
     if(ui_double_buffered && ui_backbuf){
-        ui_backbuf[y*1280 + x] = color;
+        ui_backbuf[y*1920 + x] = color;
         return;
     }
     uint32_t* pixel_addr = (uint32_t*)(

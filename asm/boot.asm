@@ -18,8 +18,8 @@ align 4
   dd 0, 0, 0, 0, 0
 
   dd 0 ; mode type = 0 means linear framebuffer, 1 means text
-  dd 1280 ; width
-  dd 720 ; height
+  dd 1920 ; width
+  dd 1080 ; height
   dd 32  ; bit per pixel
 
 section .bss

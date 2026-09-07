@@ -4,8 +4,8 @@
 #include <font.h>
 #include <string.h>
 
-#define GPU_MAX_W 1280
-#define GPU_MAX_H 720
+#define GPU_MAX_W 1920
+#define GPU_MAX_H 1080
 
 static uint32_t backbuf[GPU_MAX_W * GPU_MAX_H];
 static uint32_t fb_addr;
@@ -80,7 +80,7 @@ static uint32_t *px_addr(int x, int y) {
     uint32_t ay = (uint32_t)(vy + y);
     if(display_is_double_buffered()){
         uint32_t *bb = display_get_backbuffer();
-        if(bb) return &bb[ay*1280 + ax];
+        if(bb) return &bb[ay*1920 + ax];
     }
     if (use_direct) {
         if (ax >= fb_w || ay >= fb_h) return 0;
