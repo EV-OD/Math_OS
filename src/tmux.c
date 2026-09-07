@@ -197,6 +197,7 @@ static void render_pane_chrome(int is_focused, pane_t *p){
 }
 static void tmux_render(void){
     uint32_t W=display_width(), H=display_height();
+    for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==cur_window && panes[i].is_canvas && panes[i].canvas_has_content) canvas_save(&panes[i]);
     display_enable_double_buffer(1);
     draw_rect(0,0,W,H-BAR_H,0x0B1020);
     int win = cur_window;
@@ -204,11 +205,18 @@ static void tmux_render(void){
     for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==win) pane_count++;
     for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==win){
         int foc = (panes[i].id==windows[win].focused);
-        draw_rect(panes[i].x, panes[i].y, panes[i].w, panes[i].h, 0x0B1020);
         if(!panes[i].is_canvas){
+            draw_rect(panes[i].x, panes[i].y, panes[i].w, panes[i].h, 0x0B1020);
             display_render(i);
             render_pane_chrome(foc, &panes[i]);
         }else{
+            if(panes[i].canvas_has_content) canvas_restore(&panes[i]);
+            else{
+                draw_rect(panes[i].x+2, panes[i].y+2, panes[i].w-4, panes[i].h-4, 0x0B1020);
+                int vx=panes[i].x+2, vy=panes[i].y+2, vw=panes[i].w-4, vh=panes[i].h-4;
+                for(int x=0;x<vw;x+=40) for(int y=0;y<vh;y++) draw_pixel(vx+x, vy+y, 0x1A1F3A);
+                for(int y=0;y<vh;y+=40) for(int x=0;x<vw;x++) draw_pixel(vx+x, vy+y, 0x1A1F3A);
+            }
             render_pane_chrome(foc, &panes[i]);
         }
     }
