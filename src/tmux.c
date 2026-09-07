@@ -43,6 +43,7 @@ typedef struct {
     uint32_t canvas_buf[1920*1080];
     int canvas_has_content;
     int canvas_w, canvas_h;
+    int prompt_shown;
 } pane_t;
 
 typedef struct {
@@ -57,6 +58,7 @@ static multiboot_info_t *g_mb = 0;
 static void canvas_save(pane_t *p){
     if(!p||!p->is_canvas||!g_mb) return;
     int vx=p->x+2, vy=p->y+2, vw=p->w-4, vh=p->h-4;
+    log_debug("ui: canvas_save pane=%d cid=%d %dx%d has=%d", p->id, p->canvas_id, vw, vh, p->canvas_has_content);
     p->canvas_w=vw; p->canvas_h=vh;
     uint32_t *src_fb;
     uint32_t src_pitch;
@@ -77,7 +79,11 @@ static void canvas_save(pane_t *p){
 static void canvas_restore(pane_t *p){
     if(!p||!p->is_canvas||!p->canvas_has_content||!g_mb) return;
     int vx=p->x+2, vy=p->y+2, vw=p->canvas_w, vh=p->canvas_h;
-    if(vw!=p->w-4 || vh!=p->h-4) return;
+    if(vw!=p->w-4 || vh!=p->h-4){
+        log_debug("ui: canvas_restore SKIP pane=%d size %dx%d vs %dx%d", p->id, vw, vh, p->w-4, p->h-4);
+        return;
+    }
+    log_debug("ui: canvas_restore pane=%d cid=%d", p->id, p->canvas_id);
     uint32_t *dst_fb;
     uint32_t dst_pitch;
     if(display_is_double_buffered()){
@@ -92,6 +98,7 @@ static void canvas_restore(pane_t *p){
         uint32_t *dst=(uint32_t*)((uint8_t*)dst_fb + (vy+y)*dst_pitch + vx*4);
         memcpy(dst, p->canvas_buf + y*1920, vw*4);
     }
+    display_dirty(vx, vy, vw, vh);
 }
 
 static pane_t panes[MAX_PANES];
@@ -105,8 +112,6 @@ static int default_canvas = 0;
 static int prefix = 0;
 static uint32_t prefix_time = 0;
 static int canvas_grid[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
-static uint32_t canvas_bufs[8][640*480];
-static int canvas_bw[8], canvas_bh[8];
 
 static int alloc_node(void){
     for(int i=0;i<MAX_NODES;i++) if(!nodes[i].used){ nodes[i].used=1; nodes[i].is_leaf=1; nodes[i].pane_id=-1; nodes[i].a=nodes[i].b=-1; nodes[i].parent=-1; nodes[i].ratio=128; return i; }
@@ -219,8 +224,8 @@ static void render_pane_chrome(int is_focused, pane_t *p){
 }
 static void tmux_render(void){
     uint32_t W=display_width(), H=display_height();
+    log_debug("ui: render win=%d foc=%d", cur_window, windows[cur_window].focused);
     for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==cur_window && panes[i].is_canvas && panes[i].canvas_has_content) canvas_save(&panes[i]);
-    display_enable_double_buffer(1);
     draw_rect(0,0,W,H-BAR_H,0x0B1020);
     int win = cur_window;
     int pane_count=0;
@@ -288,7 +293,6 @@ static void tmux_render(void){
         }
     }
     display_present();
-    display_enable_double_buffer(0);
 }
 static int create_pane_for_window(int win){
     int pid=alloc_pane();
@@ -301,6 +305,8 @@ static int create_pane_for_window(int win){
     panes[pid].input_len=0;
     panes[pid].input[0]=0;
     panes[pid].is_shell=1;
+    panes[pid].prompt_shown=0;
+    panes[pid].canvas_has_content=0;
     display_create(pid, 0,0, 100,100);
     widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100,0);
     if(wd){
@@ -364,6 +370,13 @@ int tmux_canvas_count(void){
 }
 void tmux_set_default_canvas(int id){ default_canvas=id; }
 int tmux_has_canvas(int id){ int x,y,w,h; return tmux_get_canvas_rect(id,&x,&y,&w,&h)==0; }
+static void mark_canvas_dirty(int cid){
+    for(int i=0;i<MAX_PANES;i++)
+        if(panes[i].active && panes[i].is_canvas && panes[i].canvas_id==cid){
+            panes[i].canvas_has_content=1;
+            log_debug("ui: canvas %d marked dirty by plot", cid);
+        }
+}
 int tmux_parse_canvas_prefix(const char *line, int *canvas_id, const char **rest){
     while(*line==' '||*line=='\t') line++;
     int n=0, has=0;
@@ -425,6 +438,7 @@ static int tmux_split(int vertical){
     nodes[nb].used=1; nodes[nb].is_leaf=1; nodes[nb].pane_id=new_pane; nodes[nb].parent=leaf; nodes[nb].a=nodes[nb].b=-1;
     panes[new_pane].id=new_pane; panes[new_pane].active=1; panes[new_pane].window=win;
     panes[new_pane].is_canvas=0; panes[new_pane].canvas_id=0; panes[new_pane].input_len=0; panes[new_pane].input[0]=0;
+    panes[new_pane].prompt_shown=0; panes[new_pane].canvas_has_content=0;
     display_create(new_pane, 0,0,100,100);
     widget_t *wd = widget_create(WIDGET_SHELL, 0,0,100,100,0);
     if(wd){ wd->id=new_pane; pane_widgets[new_pane]=wd; if(window_roots[win]) widget_add_child(window_roots[win], wd); }
@@ -567,6 +581,13 @@ static int tmux_handle_canvas(void){
 extern void shell_exec(char *line);
 static void tmux_exec_line(pane_t *pane, char *line){
     while(*line==' '||*line=='\t') line++;
+    {
+        char lbuf[48];
+        int li=0;
+        while(line[li] && li<47){ lbuf[li]=line[li]; li++; }
+        lbuf[li]=0;
+        log_debug("ui: exec pane=%d line='%s'", pane->id, lbuf);
+    }
     if(strcmp(line,"canvas")==0){ int r=tmux_handle_canvas(); display_select(pane->id); if(r==0) printf("canvas %d created\n", panes[pane->id].canvas_id); else printf("canvas failed\n"); return; }
     if(strcmp(line,"panes")==0){
         display_select(pane->id);
@@ -592,11 +613,13 @@ static void tmux_exec_line(pane_t *pane, char *line){
                 char tmp[256]; strncpy(tmp,rest+5,255); tmp[255]=0;
                 display_select(pane->id);
                 cmd_plot(tmp);
+                mark_canvas_dirty(cid);
                 return;
             }else if(strncmp(rest,"fft",3)==0){
                 extern void cmd_fft(const char *a);
                 display_select(pane->id);
                 cmd_fft(rest[3]?rest+4:"");
+                mark_canvas_dirty(cid);
                 return;
             }else if(strncmp(rest,"grid",4)==0){
                 const char *arg=rest+4;
@@ -620,6 +643,7 @@ static void tmux_exec_line(pane_t *pane, char *line){
             display_select(pane->id);
             extern void cmd_plot(const char *a);
             cmd_plot(line+5);
+            mark_canvas_dirty(dc);
             return;
         }
     }
@@ -631,6 +655,7 @@ static void tmux_exec_line(pane_t *pane, char *line){
             display_select(pane->id);
             extern void cmd_fft(const char *a);
             cmd_fft(line[3]?line+4:"");
+            mark_canvas_dirty(dc);
             return;
         }
     }
@@ -643,6 +668,8 @@ static void tmux_exec_line(pane_t *pane, char *line){
 multiboot_info_t *tmux_mb_info=0;
 void tmux_init(multiboot_info_t *mb){
     tmux_mb_info=mb;
+    g_mb=mb;
+    log_debug("ui: tmux_init fb=%x", mb ? mb->framebuffer_addr : 0);
     memset(panes,0,sizeof(panes));
     memset(windows,0,sizeof(windows));
     memset(nodes,0,sizeof(nodes));
@@ -655,6 +682,7 @@ void tmux_init(multiboot_info_t *mb){
     canvas_widget_init();
     cur_window=0;
     create_window_with_pane();
+    display_enable_double_buffer(1);
     tmux_render();
 }
 void tmux_run(multiboot_info_t *mb){
@@ -688,6 +716,7 @@ void tmux_run(multiboot_info_t *mb){
                         continue;
                     }
                 }
+                display_present();
                 __asm__ volatile("hlt");
             }
             for(int i=0;i<n;i++){
@@ -725,19 +754,19 @@ void tmux_run(multiboot_info_t *mb){
                         else if(k.ascii=='p'){ tmux_switch_window(-1); goto pane_break; }
                         else if(k.ascii>='0'&&k.ascii<='9'){ tmux_select_window(k.ascii-'0'); goto pane_break; }
                         else if(k.ascii=='x'){ tmux_kill_pane(foc); goto pane_break; }
-                        else if(k.ascii=='h'){ int nb=find_adjacent_pane(0); if(nb>=0){ windows[win].focused=nb; tmux_render(); } continue; }
-                        else if(k.ascii=='l'){ int nb=find_adjacent_pane(1); if(nb>=0){ windows[win].focused=nb; tmux_render(); } continue; }
-                        else if(k.ascii=='k'){ int nb=find_adjacent_pane(2); if(nb>=0){ windows[win].focused=nb; tmux_render(); } continue; }
-                        else if(k.ascii=='j'){ int nb=find_adjacent_pane(3); if(nb>=0){ windows[win].focused=nb; tmux_render(); } continue; }
+                        else if(k.ascii=='h'){ int nb=find_adjacent_pane(0); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.ascii=='l'){ int nb=find_adjacent_pane(1); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.ascii=='k'){ int nb=find_adjacent_pane(2); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.ascii=='j'){ int nb=find_adjacent_pane(3); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
                         else if(k.ascii=='H'){ tmux_resize(0,10); continue; }
                         else if(k.ascii=='L'){ tmux_resize(1,10); continue; }
                         else if(k.ascii=='K'){ tmux_resize(2,10); continue; }
                         else if(k.ascii=='J'){ tmux_resize(3,10); continue; }
                     }else{
-                        if(k.key_enum==KEY_LEFT){ int nb=find_adjacent_pane(0); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
-                        else if(k.key_enum==KEY_RIGHT){ int nb=find_adjacent_pane(1); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
-                        else if(k.key_enum==KEY_UP){ int nb=find_adjacent_pane(2); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
-                        else if(k.key_enum==KEY_DOWN){ int nb=find_adjacent_pane(3); if(nb>=0){ windows[win].focused=nb; tmux_render(); } }
+                        if(k.key_enum==KEY_LEFT){ int nb=find_adjacent_pane(0); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.key_enum==KEY_RIGHT){ int nb=find_adjacent_pane(1); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.key_enum==KEY_UP){ int nb=find_adjacent_pane(2); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.key_enum==KEY_DOWN){ int nb=find_adjacent_pane(3); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
                         if(k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN){
                             if(ks->lctrl||ks->rctrl){
                                 int dir=-1;
@@ -756,11 +785,17 @@ void tmux_run(multiboot_info_t *mb){
             continue;
         }
         display_select(pane->id);
-        char prompt[32];
-        sprintf(prompt, "shell %d >\n", pane->id);
-        display_set_fg(0x2BD97C);
-        draw_string(prompt);
-        display_set_fg(0xE8ECF5);
+        if(!pane->prompt_shown){
+            char prompt[32];
+            sprintf(prompt, "shell %d >\n", pane->id);
+            log_debug("ui: prompt pane=%d", pane->id);
+            display_set_fg(0x2BD97C);
+            draw_string(prompt);
+            display_set_fg(0xE8ECF5);
+            pane->prompt_shown=1;
+        } else {
+            log_debug("ui: prompt skip pane=%d", pane->id);
+        }
         pane->input_len=0;
         pane->input[0]=0;
         for(;;){
@@ -792,11 +827,13 @@ void tmux_run(multiboot_info_t *mb){
                     if(ch=='\r'||ch=='\n'){
                         draw_string("\n");
                         pane->input[pane->input_len]=0;
+                        pane->prompt_shown=0;
                         tmux_exec_line(pane, pane->input);
                         goto pane_break;
                     }
                     if(ch==0x03){
                         draw_string("^C\n");
+                        pane->prompt_shown=0;
                         tmux_exec_line(pane,"");
                         goto pane_break;
                     }
@@ -810,6 +847,7 @@ void tmux_run(multiboot_info_t *mb){
                     }
                 }
                 if(prefix && timer_now()-prefix_time>200) { prefix=0; tmux_render(); }
+                display_present();
                 __asm__ volatile("hlt");
             }
             prefix_serial:
@@ -860,10 +898,10 @@ void tmux_run(multiboot_info_t *mb){
                         else if(k.ascii=='K'){ tmux_resize(2,10); goto pane_break; }
                         else if(k.ascii=='J'){ tmux_resize(3,10); goto pane_break; }
                     }else{
-                        if(k.key_enum==KEY_LEFT){ int nb=find_adjacent_pane(0); if(nb>=0) windows[win].focused=nb; tmux_render(); }
-                        else if(k.key_enum==KEY_RIGHT){ int nb=find_adjacent_pane(1); if(nb>=0) windows[win].focused=nb; tmux_render(); }
-                        else if(k.key_enum==KEY_UP){ int nb=find_adjacent_pane(2); if(nb>=0) windows[win].focused=nb; tmux_render(); }
-                        else if(k.key_enum==KEY_DOWN){ int nb=find_adjacent_pane(3); if(nb>=0) windows[win].focused=nb; tmux_render(); }
+                        if(k.key_enum==KEY_LEFT){ int nb=find_adjacent_pane(0); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.key_enum==KEY_RIGHT){ int nb=find_adjacent_pane(1); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.key_enum==KEY_UP){ int nb=find_adjacent_pane(2); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
+                        else if(k.key_enum==KEY_DOWN){ int nb=find_adjacent_pane(3); if(nb>=0){ windows[win].focused=nb; tmux_render(); goto pane_break; } }
                     }
                     if(k.key_enum==KEY_LEFT||k.key_enum==KEY_RIGHT||k.key_enum==KEY_UP||k.key_enum==KEY_DOWN){
                         if(ks->lctrl||ks->rctrl){
@@ -913,6 +951,7 @@ void tmux_run(multiboot_info_t *mb){
                     if(k.key_enum==KEY_ENTER){
                         draw_string("\n");
                         pane->input[pane->input_len]=0;
+                        pane->prompt_shown=0;
                         char linecopy[256]; strcpy(linecopy,pane->input);
                         tmux_exec_line(pane, linecopy);
                         goto pane_break;

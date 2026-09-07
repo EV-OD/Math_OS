@@ -3,6 +3,7 @@
 #include <process.h>
 #include <font.h>
 #include <string.h>
+#include <log.h>
 
 #define GPU_MAX_W 1920
 #define GPU_MAX_H 1080
@@ -41,6 +42,7 @@ void gpu_set_view(int x, int y, int w, int h) {
     vy = y;
     vw = w;
     vh = h;
+    log_debug("ui: gpu_view %d,%d %dx%d", x, y, w, h);
 }
 
 uint32_t gpu_width(void) { return (uint32_t)vw; }
@@ -55,14 +57,16 @@ uint32_t gpu_rgb(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 int gpu_claim(void) {
-    if (owner >= 0) return -1;
+    if (owner >= 0) { log_debug("ui: gpu_claim busy owner=%d", owner); return -1; }
     owner = proc_self();
+    log_debug("ui: gpu_claim owner=%d", owner);
     gpu_clear(0x040610);
     gpu_present();
     return 0;
 }
 
 void gpu_release(void) {
+    log_debug("ui: gpu_release owner=%d", owner);
     owner = -1;
     gpu_clear(0x040610);
     gpu_present();
@@ -78,10 +82,6 @@ static uint32_t *px_addr(int x, int y) {
     if (x < 0 || y < 0 || x >= vw || y >= vh) return 0;
     uint32_t ax = (uint32_t)(vx + x);
     uint32_t ay = (uint32_t)(vy + y);
-    if(display_is_double_buffered()){
-        uint32_t *bb = display_get_backbuffer();
-        if(bb) return &bb[ay*1920 + ax];
-    }
     if (use_direct) {
         if (ax >= fb_w || ay >= fb_h) return 0;
         return (uint32_t *)((uint8_t *)(uintptr_t)fb_addr + ay * fb_pitch + ax * 4);
@@ -174,7 +174,18 @@ uint32_t gpu_stride(void) {
 }
 
 void gpu_present(void) {
-    if(display_is_double_buffered()) return;
+    if(display_is_double_buffered()){
+        uint32_t *bb = display_get_backbuffer();
+        if(!bb || use_direct) return;
+        for (int y = 0; y < vh; y++) {
+            uint8_t *dst = (uint8_t *)bb + (uint32_t)(vy + y) * 1920 * 4 + (uint32_t)vx * 4;
+            uint8_t *src = (uint8_t *)&backbuf[(uint32_t)(vy + y) * fb_w + (uint32_t)vx];
+            memcpy(dst, src, (uint32_t)vw * 4);
+        }
+        display_dirty(vx, vy, vw, vh);
+        display_present();
+        return;
+    }
     if (use_direct) return;
     for (int y = 0; y < vh; y++) {
         uint8_t *dst = (uint8_t *)(uintptr_t)fb_addr + (uint32_t)(vy + y) * fb_pitch + (uint32_t)vx * 4;

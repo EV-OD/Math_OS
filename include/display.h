@@ -26,6 +26,7 @@ uint32_t display_height(void);
 void display_text_at(uint32_t x, uint32_t y, char *s);
 void display_enable_double_buffer(int enable);
 void display_present(void);
+void display_dirty(int x, int y, int w, int h);
 uint32_t *display_get_backbuffer(void);
 int display_is_double_buffered(void);
 

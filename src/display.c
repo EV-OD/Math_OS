@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <font.h>
 #include <string.h>
+#include <log.h>
 
 #define TRACK_X 2
 #define TRACK_Y 2
@@ -39,19 +40,40 @@ static multiboot_info_t* mb_info = NULL;
 static uint32_t *ui_backbuf = 0;
 static int ui_double_buffered = 0;
 static uint32_t ui_backbuffer_storage[1920*1080];
+static int d_empty = 1;
+static uint32_t dx0, dy0, dx1, dy1;
 
 void display_enable_double_buffer(int enable){
     ui_double_buffered = enable;
     if(enable) ui_backbuf = ui_backbuffer_storage;
     else ui_backbuf = 0;
 }
+void display_dirty(int x, int y, int w, int h){
+    if(!mb_info || w<=0 || h<=0) return;
+    uint32_t W = mb_info->framebuffer_width, H = mb_info->framebuffer_height;
+    if(x<0){ w+=x; x=0; }
+    if(y<0){ h+=y; y=0; }
+    if((uint32_t)x>=W || (uint32_t)y>=H) return;
+    uint32_t x1=(uint32_t)x+(uint32_t)w, y1=(uint32_t)y+(uint32_t)h;
+    if(x1>W) x1=W;
+    if(y1>H) y1=H;
+    if(d_empty){ dx0=x; dy0=y; dx1=x1; dy1=y1; d_empty=0; }
+    else{
+        if((uint32_t)x<dx0) dx0=x;
+        if((uint32_t)y<dy0) dy0=y;
+        if(x1>dx1) dx1=x1;
+        if(y1>dy1) dy1=y1;
+    }
+}
 void display_present(void){
     if(!ui_double_buffered || !mb_info || !ui_backbuf) return;
+    if(d_empty) return;
     uint32_t *fb = (uint32_t*)(uintptr_t)mb_info->framebuffer_addr;
     uint32_t pitch = mb_info->framebuffer_pitch;
-    for(uint32_t y=0;y<mb_info->framebuffer_height;y++){
-        memcpy((uint8_t*)fb + y*pitch, (uint8_t*)ui_backbuf + y*1920*4, mb_info->framebuffer_width*4);
+    for(uint32_t y=dy0;y<dy1;y++){
+        memcpy((uint8_t*)fb + y*pitch + dx0*4, (uint8_t*)ui_backbuf + y*1920*4 + dx0*4, (dx1-dx0)*4);
     }
+    d_empty=1;
 }
 uint32_t *display_get_backbuffer(void){ return ui_backbuf; }
 int display_is_double_buffered(void){ return ui_double_buffered; }
@@ -79,6 +101,7 @@ void init_display(multiboot_info_t* mb_info_data){
 
 void display_select(int id){
     if (id < 0 || id >= DISPLAY_MAX_CONSOLES) return;
+    if (id != cur_id) log_debug("ui: select console %d->%d", cur_id, id);
     cur_id = id;
     cur = &consoles[id];
 }
@@ -175,6 +198,7 @@ void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= mb_info->framebuffer_width || y >= mb_info->framebuffer_height) return;
     if(ui_double_buffered && ui_backbuf){
         ui_backbuf[y*1920 + x] = color;
+        display_dirty((int)x, (int)y, 1, 1);
         return;
     }
     uint32_t* pixel_addr = (uint32_t*)(
@@ -269,11 +293,14 @@ static void scroll_up(void){
     uint32_t rw = (cur->region_x1 > cur->region_x0) ? cur->region_x1 - cur->region_x0 : 0;
     uint32_t rh = (cur->region_bot > cur->region_top) ? cur->region_bot - cur->region_top : 0;
     if(LINE_H >= rh || rh == 0 || rw == 0) return;
-    uint8_t *base = (uint8_t*)(uintptr_t)mb_info->framebuffer_addr;
-    uint32_t pitch = mb_info->framebuffer_pitch;
+    uint8_t *base;
+    uint32_t pitch;
+    if(ui_double_buffered && ui_backbuf){ base = (uint8_t*)ui_backbuf; pitch = 1920*4; }
+    else{ base = (uint8_t*)(uintptr_t)mb_info->framebuffer_addr; pitch = mb_info->framebuffer_pitch; }
     for (uint32_t y = cur->region_top; y + LINE_H < cur->region_bot; y += LINE_H)
         memmove(base + y * pitch + cur->region_x0 * 4,
                 base + (y + LINE_H) * pitch + cur->region_x0 * 4, rw * 4);
+    display_dirty((int)cur->region_x0, (int)cur->region_top, (int)rw, (int)rh);
     draw_rect(cur->region_x0, cur->region_bot - LINE_H, rw, LINE_H, cur->bg);
 }
 
