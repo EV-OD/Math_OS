@@ -11,6 +11,7 @@
 #include <widget.h>
 #include <canvas_widget.h>
 #include <event.h>
+#include <font.h>
 #include <font_small.h>
 
 #define MAX_WINDOWS 4
@@ -57,10 +58,18 @@ static void canvas_save(pane_t *p){
     if(!p||!p->is_canvas||!g_mb) return;
     int vx=p->x+2, vy=p->y+2, vw=p->w-4, vh=p->h-4;
     p->canvas_w=vw; p->canvas_h=vh;
-    uint32_t *fb=(uint32_t*)(uintptr_t)g_mb->framebuffer_addr;
-    uint32_t pitch=g_mb->framebuffer_pitch;
+    uint32_t *src_fb;
+    uint32_t src_pitch;
+    if(display_is_double_buffered()){
+        src_fb=display_get_backbuffer();
+        src_pitch=1920*4;
+    }else{
+        src_fb=(uint32_t*)(uintptr_t)g_mb->framebuffer_addr;
+        src_pitch=g_mb->framebuffer_pitch;
+    }
+    if(!src_fb) return;
     for(int y=0;y<vh;y++){
-        uint32_t *src=(uint32_t*)((uint8_t*)fb + (vy+y)*pitch + vx*4);
+        uint32_t *src=(uint32_t*)((uint8_t*)src_fb + (vy+y)*src_pitch + vx*4);
         memcpy(p->canvas_buf + y*1920, src, vw*4);
     }
     p->canvas_has_content=1;
@@ -69,10 +78,18 @@ static void canvas_restore(pane_t *p){
     if(!p||!p->is_canvas||!p->canvas_has_content||!g_mb) return;
     int vx=p->x+2, vy=p->y+2, vw=p->canvas_w, vh=p->canvas_h;
     if(vw!=p->w-4 || vh!=p->h-4) return;
-    uint32_t *fb=(uint32_t*)(uintptr_t)g_mb->framebuffer_addr;
-    uint32_t pitch=g_mb->framebuffer_pitch;
+    uint32_t *dst_fb;
+    uint32_t dst_pitch;
+    if(display_is_double_buffered()){
+        dst_fb=display_get_backbuffer();
+        dst_pitch=1920*4;
+    }else{
+        dst_fb=(uint32_t*)(uintptr_t)g_mb->framebuffer_addr;
+        dst_pitch=g_mb->framebuffer_pitch;
+    }
+    if(!dst_fb) return;
     for(int y=0;y<vh;y++){
-        uint32_t *dst=(uint32_t*)((uint8_t*)fb + (vy+y)*pitch + vx*4);
+        uint32_t *dst=(uint32_t*)((uint8_t*)dst_fb + (vy+y)*dst_pitch + vx*4);
         memcpy(dst, p->canvas_buf + y*1920, vw*4);
     }
 }
@@ -181,16 +198,21 @@ static void render_pane_chrome(int is_focused, pane_t *p){
         sprintf(lab,"canvas %d", p->canvas_id);
         int prev=display_current();
         display_select(p->id);
-        int tw = (int)strlen(lab)*10;
+        int tw = (int)strlen(lab)*9;
         int sx = p->x + p->w - tw - 12;
         int sy = p->y + 6;
         uint32_t bg = is_focused ? col : 0x1A1F3A;
         uint32_t fg = is_focused ? 0x0B1020 : 0xE8ECF5;
         draw_rect(sx-4, sy-2, tw+8, 12, bg);
         for(int i=0; lab[i]; i++){
-            uint8_t small[8];
-            get_font_small(lab[i], small);
-            for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(sx+i*10+cc, sy+r, fg);
+            uint8_t bmp[FONT_H*FONT_BPR];
+            get_font_bitmap(lab[i], bmp);
+            for(int r=0;r<FONT_H;r+=2) for(int cc=0;cc<FONT_W;cc+=2){
+                int sr = r/2, sc = cc/2;
+                int byte = r*FONT_BPR + cc/8;
+                int bit = 7 - (cc%8);
+                if((bmp[byte]>>bit)&1) draw_pixel(sx+i*9+sc, sy+sr, fg);
+            }
         }
         display_select(prev);
     }
@@ -229,12 +251,15 @@ static void tmux_render(void){
         sprintf(tmp," %d:%s ", i, windows[i].name);
         uint32_t bg = iscur ? 0x2BD97C : 0x1A1F3A;
         uint32_t fg = iscur ? 0x0B1020 : 0xE8ECF5;
-        int tw = (int)strlen(tmp)*10;
-        draw_rect(sx, H-BAR_H+12, tw, 12, bg);
+        int tw = (int)strlen(tmp)*9;
+        draw_rect(sx, H-BAR_H+10, tw, 16, bg);
         for(int k=0; tmp[k]; k++){
-            uint8_t small[8];
-            get_font_small(tmp[k], small);
-            for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(sx+2+k*10+cc, H-BAR_H+14+r, fg);
+            uint8_t bmp[FONT_H*FONT_BPR];
+            get_font_bitmap(tmp[k], bmp);
+            for(int r=0;r<FONT_H;r+=2) for(int cc=0;cc<FONT_W;cc+=2){
+                int sr=r/2, sc=cc/2;
+                if((bmp[r*FONT_BPR+cc/8]>>(7-(cc%8)))&1) draw_pixel(sx+2+k*9+sc, H-BAR_H+14+sr, fg);
+            }
         }
         sx+=tw+10;
     }
@@ -243,19 +268,23 @@ static void tmux_render(void){
     int prev2=display_current();
     display_select(0);
     for(int k=0; extra[k]; k++){
-        uint8_t small[8];
-        get_font_small(extra[k], small);
-        for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(sx+10+k*10+cc, H-BAR_H+14+r, 0x8A93B2);
+        uint8_t bmp[FONT_H*FONT_BPR];
+        get_font_bitmap(extra[k], bmp);
+        for(int r=0;r<FONT_H;r+=2) for(int cc=0;cc<FONT_W;cc+=2){
+            if((bmp[r*FONT_BPR+cc/8]>>(7-(cc%8)))&1) draw_pixel(sx+10+k*9+cc/2, H-BAR_H+14+r/2, 0x8A93B2);
+        }
     }
     display_select(prev2);
     if(prefix){
         const char *pfx=" PREFIX ";
-        int pw=(int)strlen(pfx)*10;
-        draw_rect(W-pw-12, H-BAR_H+12, pw, 12, 0xFFD60A);
+        int pw=(int)strlen(pfx)*9;
+        draw_rect(W-pw-12, H-BAR_H+10, pw, 16, 0xFFD60A);
         for(int k=0; pfx[k]; k++){
-            uint8_t small[8];
-            get_font_small(pfx[k], small);
-            for(int r=0;r<8;r++) for(int cc=0;cc<6;cc++) if((small[r]>> (7-cc)) &1) draw_pixel(W-pw-10+k*10+cc, H-BAR_H+14+r, 0x0B1020);
+            uint8_t bmp[FONT_H*FONT_BPR];
+            get_font_bitmap(pfx[k], bmp);
+            for(int r=0;r<FONT_H;r+=2) for(int cc=0;cc<FONT_W;cc+=2){
+                if((bmp[r*FONT_BPR+cc/8]>>(7-(cc%8)))&1) draw_pixel(W-pw-10+k*9+cc/2, H-BAR_H+14+r/2, 0x0B1020);
+            }
         }
     }
     display_present();
