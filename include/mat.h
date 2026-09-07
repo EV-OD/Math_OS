@@ -8,6 +8,9 @@ void cmd_calc(const char *args);
 void cmd_plot(const char *args);
 void cmd_fft(const char *args);
 void cmd_freq(const char *args);
+void cmd_dft(const char *args);
+void cmd_adc(const char *args);
+void cmd_dac(const char *args);
 
 void mat_set_target(int cid);
 void mat_view_get(int cid, float *a, float *b);

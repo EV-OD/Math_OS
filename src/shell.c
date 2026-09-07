@@ -28,6 +28,7 @@ void shell_exec(char *line) {
     if (strcmp(line, "help") == 0) {
         printf("cmds: help keys ps run <name> kill <pid> echo <t> uptime clear ctrl+c pgup/pgdn\n");
         printf("math: calc <expr> | plot <expr> [a] [b] | fft [expr] [n] | freq | N> autofit\n");
+        printf("dsp: dft <expr> [n] | adc <expr> <bits> [n] | dac | fft adc\n");
         printf("funcs: h(x)=sin(x) | h(2) | g(x)=h(x)/x | N# sticky canvas\n");
         printf("view: z+ z- z<< N z>> N (prefix with N> for canvas N)\n");
         printf("progs:");

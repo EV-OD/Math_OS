@@ -699,6 +699,24 @@ static void tmux_exec_line(pane_t *pane, char *line){
                 cmd_freq("");
                 mark_canvas_dirty(cid);
                 return;
+            }else if(strncmp(rest,"dft",3)==0 && (rest[3]==0||rest[3]==' '||rest[3]=='\t')){
+                extern void cmd_dft(const char *a);
+                display_select(pane->id);
+                cmd_dft(rest[3]?rest+4:"");
+                mark_canvas_dirty(cid);
+                return;
+            }else if(strncmp(rest,"adc",3)==0 && (rest[3]==0||rest[3]==' '||rest[3]=='\t')){
+                extern void cmd_adc(const char *a);
+                display_select(pane->id);
+                cmd_adc(rest[3]?rest+4:"");
+                mark_canvas_dirty(cid);
+                return;
+            }else if(strcmp(rest,"dac")==0){
+                extern void cmd_dac(const char *a);
+                display_select(pane->id);
+                cmd_dac("");
+                mark_canvas_dirty(cid);
+                return;
             }else if(strncmp(rest,"grid",4)==0){
                 const char *arg=rest+4;
                 while(*arg==' '||*arg=='\t') arg++;
@@ -758,6 +776,9 @@ static void tmux_exec_line(pane_t *pane, char *line){
             display_select(pane->id);
             int need_cvs = !strncmp(rest,"plot ",5) ||
                 (!strncmp(rest,"fft",3)&&(rest[3]==0||rest[3]==' '||rest[3]=='\t')) ||
+                (!strncmp(rest,"dft",3)&&(rest[3]==0||rest[3]==' '||rest[3]=='\t')) ||
+                (!strncmp(rest,"adc",3)&&(rest[3]==0||rest[3]==' '||rest[3]=='\t')) ||
+                !strcmp(rest,"dac") ||
                 !strcmp(rest,"freq") ||
                 !strncmp(rest,"grid",4) ||
                 (!strncmp(rest,"autofit",7)&&(rest[7]==0||rest[7]==' '||rest[7]=='\t')) ||
@@ -819,6 +840,56 @@ static void tmux_exec_line(pane_t *pane, char *line){
         } else {
             mat_set_target(0);
             cmd_freq("");
+        }
+        return;
+    }
+    if(strncmp(line,"dft",3)==0 && (line[3]==0||line[3]==' ')){
+        int dc = resolve_canvas(pane);
+        const char *fa = line[3]?line+4:"";
+        display_select(pane->id);
+        extern void cmd_dft(const char *a);
+        if(dc){
+            int x,y,w,h; tmux_get_canvas_rect(dc,&x,&y,&w,&h);
+            gpu_set_view(x,y,w,h);
+            mat_set_target(dc);
+            cmd_dft(fa);
+            mark_canvas_dirty(dc);
+        } else {
+            mat_set_target(0);
+            cmd_dft(fa);
+        }
+        return;
+    }
+    if(strncmp(line,"adc",3)==0 && (line[3]==0||line[3]==' ')){
+        int dc = resolve_canvas(pane);
+        const char *fa = line[3]?line+4:"";
+        display_select(pane->id);
+        extern void cmd_adc(const char *a);
+        if(dc){
+            int x,y,w,h; tmux_get_canvas_rect(dc,&x,&y,&w,&h);
+            gpu_set_view(x,y,w,h);
+            mat_set_target(dc);
+            cmd_adc(fa);
+            mark_canvas_dirty(dc);
+        } else {
+            mat_set_target(0);
+            cmd_adc(fa);
+        }
+        return;
+    }
+    if(strcmp(line,"dac")==0){
+        int dc = resolve_canvas(pane);
+        display_select(pane->id);
+        extern void cmd_dac(const char *a);
+        if(dc){
+            int x,y,w,h; tmux_get_canvas_rect(dc,&x,&y,&w,&h);
+            gpu_set_view(x,y,w,h);
+            mat_set_target(dc);
+            cmd_dac("");
+            mark_canvas_dirty(dc);
+        } else {
+            mat_set_target(0);
+            cmd_dac("");
         }
         return;
     }

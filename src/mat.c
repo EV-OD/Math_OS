@@ -58,6 +58,12 @@ void mat_grid(int cid, int on) {
 static struct { int valid; int kind; char expr[220]; float a, b; } stored[16];
 static int last_n = 0;
 static float last_mags[129];
+static int adc_valid = 0;
+static int adc_n = 0;
+static int adc_bits = 0;
+static float adc_min = 0, adc_max = 0;
+static float adc_samp[256];
+static char adc_expr[220];
 
 void mat_set_target(int cid) {
     if (cid >= 0 && cid < MAX_STORED) target_cid = cid;
@@ -312,12 +318,13 @@ static float lit_value(const char *s, int len, int *err) {
     return calc_eval(b, err);
 }
 
-void cmd_fft(const char *args) {
+static int fft_parse_args(const char *args, const char *tag, int pow2,
+                            int *has_expr, char *expr, int *n, float *fa, float *fb) {
     while (*args == ' ' || *args == '\t') args++;
-    int n = 64;
-    float fa = 0, fb = 2 * K_PI;
-    char expr[220];
-    int has_expr = 0;
+    *n = 64;
+    *fa = 0;
+    *fb = 2 * K_PI;
+    *has_expr = 0;
     if (*args) {
         int len = strlen(args);
         while (len > 0 && (args[len - 1] == ' ' || args[len - 1] == '\t')) len--;
@@ -335,69 +342,83 @@ void cmd_fft(const char *args) {
         }
         while (end > 0 && (args[end - 1] == ' ' || args[end - 1] == '\t')) end--;
         if (nums == 0) {
-            if (len >= 220) { printf("fft: expression too long\n"); return; }
+            if (len >= 220) { printf("%s: expression too long\n", tag); return 0; }
             memcpy(expr, args, len);
             expr[len] = 0;
-            has_expr = 1;
+            *has_expr = 1;
         } else if (nums == 1 && end == 0) {
             int err = 0;
             float v = lit_value(args + ns[0], ne[0] - ns[0], &err);
-            if (err) { printf("usage: fft [expr] [a] [b] [n]\n"); return; }
-            n = (int)v;
+            if (err) { printf("usage: %s [expr] [a] [b] [n]\n", tag); return 0; }
+            *n = (int)v;
         } else if ((nums == 1 || nums == 2 || nums == 3) && end > 0) {
             int err = 0;
             if (nums == 3) {
-                n = (int)lit_value(args + ns[0], ne[0] - ns[0], &err);
-                if (err) { printf("usage: fft [expr] [a] [b] [n]\n"); return; }
+                *n = (int)lit_value(args + ns[0], ne[0] - ns[0], &err);
+                if (err) { printf("usage: %s [expr] [a] [b] [n]\n", tag); return 0; }
             }
             if (nums >= 2) {
                 int ai = nums == 3 ? 2 : 1;
                 int bi = nums == 3 ? 1 : 0;
-                fa = lit_value(args + ns[ai], ne[ai] - ns[ai], &err);
-                fb = lit_value(args + ns[bi], ne[bi] - ns[bi], &err);
-                if (err) { printf("usage: fft [expr] [a] [b] [n]\n"); return; }
-                if (fa == fb) { printf("fft: empty domain\n"); return; }
-                if (fa > fb) { float t = fa; fa = fb; fb = t; }
+                *fa = lit_value(args + ns[ai], ne[ai] - ns[ai], &err);
+                *fb = lit_value(args + ns[bi], ne[bi] - ns[bi], &err);
+                if (err) { printf("usage: %s [expr] [a] [b] [n]\n", tag); return 0; }
+                if (*fa == *fb) { printf("%s: empty domain\n", tag); return 0; }
+                if (*fa > *fb) { float t = *fa; *fa = *fb; *fb = t; }
             }
             if (nums == 1) {
-                n = (int)lit_value(args + ns[0], ne[0] - ns[0], &err);
-                if (err) { printf("usage: fft [expr] [a] [b] [n]\n"); return; }
+                *n = (int)lit_value(args + ns[0], ne[0] - ns[0], &err);
+                if (err) { printf("usage: %s [expr] [a] [b] [n]\n", tag); return 0; }
             }
-            if (end >= 220) { printf("fft: expression too long\n"); return; }
+            if (end >= 220) { printf("%s: expression too long\n", tag); return 0; }
             memcpy(expr, args, end);
             expr[end] = 0;
-            has_expr = 1;
+            *has_expr = 1;
         } else {
-            printf("usage: fft [expr] [a] [b] [n]\n");
-            return;
+            printf("usage: %s [expr] [a] [b] [n]\n", tag);
+            return 0;
         }
     }
-    if (!fft_valid_n(n)) {
-        printf("usage: fft [expr] [a] [b] [n], n in 16|32|64|128|256\n");
-        return;
-    }
-    static Complex buf[256];
-    static float mags[129];
-    if (has_expr) {
-        int err = 0;
-        for (int i = 0; i < n; i++) {
-            float x = fa + (fb - fa) * (float)i / (float)n;
-            calc_set_var("x", x);
-            float v = calc_eval(expr, &err);
-            if (err || v != v || !k_isfinite(v)) v = 0;
-            buf[i].re = v;
-            buf[i].im = 0;
+    if (pow2) {
+        if (!fft_valid_n(*n)) {
+            printf("usage: %s [expr] [a] [b] [n], n in 16|32|64|128|256\n", tag);
+            return 0;
         }
-        if (err) { printf("fft: bad expression\n"); return; }
     } else {
-        for (int i = 0; i < n; i++) {
-            float t = (float)i / (float)n;
-            float s = k_sin(2 * K_PI * 5 * t) + 0.5f * k_sin(2 * K_PI * 12 * t) + 0.3f;
-            buf[i].re = s;
-            buf[i].im = 0;
+        if (!dft_valid_n(*n)) {
+            printf("usage: %s [expr] [a] [b] [n], n in 8..256\n", tag);
+            return 0;
         }
     }
-    fft_inplace(buf, n);
+    return 1;
+}
+
+static void fft_fill_demo(Complex *buf, int n) {
+    for (int i = 0; i < n; i++) {
+        float t = (float)i / (float)n;
+        float s = k_sin(2 * K_PI * 5 * t) + 0.5f * k_sin(2 * K_PI * 12 * t) + 0.3f;
+        buf[i].re = s;
+        buf[i].im = 0;
+    }
+}
+
+static int fft_fill_expr(Complex *buf, int n, const char *expr, float fa, float fb) {
+    int err = 0;
+    for (int i = 0; i < n; i++) {
+        float x = fa + (fb - fa) * (float)i / (float)n;
+        calc_set_var("x", x);
+        float v = calc_eval(expr, &err);
+        if (err || v != v || !k_isfinite(v)) v = 0;
+        buf[i].re = v;
+        buf[i].im = 0;
+    }
+    return err;
+}
+
+static void fft_finish(int n, Complex *buf, const char *title, const char *tag, int direct) {
+    static float mags[129];
+    if (direct) dft_direct(buf, n);
+    else fft_inplace(buf, n);
     last_n = n;
     float mmax = 0;
     for (int k = 0; k <= n / 2; k++) {
@@ -405,7 +426,7 @@ void cmd_fft(const char *args) {
         last_mags[k] = mags[k];
         if (mags[k] > mmax) mmax = mags[k];
     }
-    printf("fft n=%d (bins 0..%d)\n", n, n / 2);
+    printf("%s n=%d (bins 0..%d)\n", tag, n, n / 2);
     for (int k = 0; k <= n / 2; k++) {
         int ispeak = k > 0 && k < n / 2 && mags[k] > mags[k - 1] &&
                      mags[k] > mags[k + 1] && mags[k] > 0.2f * mmax;
@@ -415,11 +436,214 @@ void cmd_fft(const char *args) {
         printf("bin %d mag %s%s\n", k, mb, ispeak ? " * peak" : "");
     }
     if (gpu_owned()) {
-        printf("fft: graph skipped, canvas busy\n");
+        printf("%s: graph skipped, canvas busy\n", tag);
     } else if (target_cid > 0) {
-        fft_bars(n, mags, mmax, has_expr ? expr : "FFT spectrum");
+        fft_bars(n, mags, mmax, title);
         printf("spectrum on canvas (stays until next graph)\n");
     }
+}
+
+void cmd_fft(const char *args) {
+    int n, has_expr;
+    float fa, fb;
+    char expr[220];
+    {
+        const char *q = args;
+        while (*q == ' ' || *q == '\t') q++;
+        if (!strncmp(q, "adc", 3)) {
+            const char *r = q + 3;
+            while (*r == ' ' || *r == '\t') r++;
+            if (!*r) {
+                if (!adc_valid) { printf("fft: run adc first\n"); return; }
+                static Complex abuf[256];
+                n = adc_n;
+                for (int i = 0; i < n; i++) { abuf[i].re = adc_samp[i]; abuf[i].im = 0; }
+                fft_finish(n, abuf, "FFT of ADC samples", "fft", 0);
+                return;
+            }
+        }
+    }
+    if (!fft_parse_args(args, "fft", 1, &has_expr, expr, &n, &fa, &fb)) return;
+    static Complex buf[256];
+    if (has_expr) {
+        if (fft_fill_expr(buf, n, expr, fa, fb)) { printf("fft: bad expression\n"); return; }
+    } else {
+        fft_fill_demo(buf, n);
+    }
+    fft_finish(n, buf, has_expr ? expr : "FFT spectrum", "fft", 0);
+}
+
+void cmd_dft(const char *args) {
+    int n, has_expr;
+    float fa, fb;
+    char expr[220];
+    if (!fft_parse_args(args, "dft", 0, &has_expr, expr, &n, &fa, &fb)) return;
+    static Complex buf[256];
+    if (has_expr) {
+        if (fft_fill_expr(buf, n, expr, fa, fb)) { printf("dft: bad expression\n"); return; }
+    } else {
+        fft_fill_demo(buf, n);
+    }
+    fft_finish(n, buf, has_expr ? expr : "DFT spectrum", "dft", 1);
+}
+
+void cmd_adc(const char *args) {
+    while (*args == ' ' || *args == '\t') args++;
+    int len = strlen(args);
+    while (len > 0 && (args[len - 1] == ' ' || args[len - 1] == '\t')) len--;
+    int nums = 0;
+    int ns[2], ne[2];
+    int end = len;
+    while (nums < 2) {
+        int s, e;
+        if (!peel_token(args, end, &s, &e)) break;
+        if (!is_numlit(args + s, e - s)) break;
+        ns[nums] = s;
+        ne[nums] = e;
+        nums++;
+        end = s;
+    }
+    while (end > 0 && (args[end - 1] == ' ' || args[end - 1] == '\t')) end--;
+    if (nums < 1 || nums > 2 || end <= 0) {
+        printf("usage: adc <expr> <bits> [n]\n");
+        return;
+    }
+    int err = 0;
+    int bits = (int)lit_value(args + ns[nums - 1], ne[nums - 1] - ns[nums - 1], &err);
+    int n = 64;
+    if (nums == 2) {
+        n = (int)lit_value(args + ns[0], ne[0] - ns[0], &err);
+    }
+    if (err || bits < 1 || bits > 16 || n < 8 || n > 256) {
+        printf("usage: adc <expr> <bits 1..16> [n 8..256]\n");
+        return;
+    }
+    if (end >= 220) { printf("adc: expression too long\n"); return; }
+    char expr[220];
+    memcpy(expr, args, end);
+    expr[end] = 0;
+    static float raw[256];
+    float mn = 0, mx = 0;
+    for (int i = 0; i < n; i++) {
+        float x = 2 * K_PI * (float)i / (float)n;
+        calc_set_var("x", x);
+        float v = calc_eval(expr, &err);
+        if (err || v != v || !k_isfinite(v)) v = 0;
+        raw[i] = v;
+        if (i == 0 || v < mn) mn = v;
+        if (i == 0 || v > mx) mx = v;
+    }
+    if (err) { printf("adc: bad expression\n"); return; }
+    int levels = (1 << bits) - 1;
+    for (int i = 0; i < n; i++) {
+        float q = 0;
+        if (mx - mn > 1e-9f) {
+            long qi = (long)((raw[i] - mn) / (mx - mn) * levels + 0.5f);
+            if (qi < 0) qi = 0;
+            if (qi > levels) qi = levels;
+            q = mn + (float)qi / (float)levels * (mx - mn);
+        } else {
+            q = mn;
+        }
+        adc_samp[i] = q;
+    }
+    adc_valid = 1;
+    adc_n = n;
+    adc_bits = bits;
+    adc_min = mn;
+    adc_max = mx;
+    int ei = 0;
+    while (expr[ei] && ei < 219) { adc_expr[ei] = expr[ei]; ei++; }
+    adc_expr[ei] = 0;
+    printf("adc n=%d bits=%d range ", n, bits);
+    char sb[32], se[32];
+    fmt_float(sb, mn);
+    fmt_float(se, mx);
+    printf("%s..%s\n", sb, se);
+    int show = n < 16 ? n : 16;
+    for (int i = 0; i < show; i++) {
+        char vb[32];
+        fmt_float(vb, adc_samp[i]);
+        printf("s[%d]=%s\n", i, vb);
+    }
+    if (n > show) printf("... (%d more)\n", n - show);
+    if (gpu_owned() || target_cid <= 0) return;
+    uint32_t W = gpu_width(), H = gpu_height();
+    gpu_clear(gpu_rgb(4, 6, 16));
+    int x0 = 10, x1 = (int)W - 10, y0 = 52, y1 = (int)H - 30;
+    gpu_rect_outline(x0, y0, x1 - x0, y1 - y0, gpu_rgb(120, 130, 160));
+    float lo = mn, hi = mx;
+    if (hi - lo < 1e-9f) { lo -= 1; hi += 1; }
+    int px = x0, py = 0;
+    for (int i = 0; i < n; i++) {
+        int sx = x0 + (int)((float)i / (n - 1) * (x1 - x0));
+        int sy = y1 - (int)((adc_samp[i] - lo) / (hi - lo) * (y1 - y0));
+        if (i > 0) {
+            gpu_line(px, py, sx, py, gpu_rgb(255, 210, 60));
+            gpu_line(sx, py, sx, sy, gpu_rgb(255, 210, 60));
+        }
+        px = sx;
+        py = sy;
+    }
+    gpu_text(12, 10, "ADC quantized steps", gpu_rgb(255, 255, 255));
+    gpu_present();
+    printf("steps on canvas (stays until next graph)\n");
+}
+
+void cmd_dac(const char *args) {
+    while (*args == ' ' || *args == '\t') args++;
+    if (*args) { printf("usage: dac\n"); return; }
+    if (!adc_valid) { printf("dac: run adc first\n"); return; }
+    int n = adc_n;
+    float lo = adc_min, hi = adc_max;
+    if (hi - lo < 1e-9f) { lo -= 1; hi += 1; }
+    int err = 0;
+    float se = 0;
+    for (int i = 0; i < n; i++) {
+        float xm = 2 * K_PI * ((float)i + 0.5f) / (float)n;
+        calc_set_var("x", xm);
+        float v = calc_eval(adc_expr, &err);
+        if (err || v != v || !k_isfinite(v)) v = 0;
+        float d = v - adc_samp[i];
+        se += d * d;
+    }
+    if (err) { printf("dac: bad stored expression\n"); return; }
+    char eb[32], lb[32], hb[32];
+    fmt_float(eb, k_sqrt(se / n));
+    fmt_float(lb, lo);
+    fmt_float(hb, hi);
+    printf("dac n=%d bits=%d rms=%s range %s..%s\n", n, adc_bits, eb, lb, hb);
+    if (gpu_owned() || target_cid <= 0) return;
+    uint32_t W = gpu_width(), H = gpu_height();
+    gpu_clear(gpu_rgb(4, 6, 16));
+    int x0 = 10, x1 = (int)W - 10, y0 = 52, y1 = (int)H - 30;
+    gpu_rect_outline(x0, y0, x1 - x0, y1 - y0, gpu_rgb(120, 130, 160));
+    int px = -1, py = -1;
+    for (int i = 0; i < 360; i++) {
+        float x = 2 * K_PI * (float)i / 359.0f;
+        calc_set_var("x", x);
+        float v = calc_eval(adc_expr, &err);
+        if (err || v != v || !k_isfinite(v)) v = 0;
+        int sx = x0 + (int)((float)i / 359.0f * (x1 - x0));
+        int sy = y1 - (int)((v - lo) / (hi - lo) * (y1 - y0));
+        if (px >= 0) gpu_line(px, py, sx, sy, gpu_rgb(80, 255, 140));
+        px = sx;
+        py = sy;
+    }
+    px = -1;
+    for (int i = 0; i < n; i++) {
+        int sx = x0 + (int)((float)i / (n - 1) * (x1 - x0));
+        int sy = y1 - (int)((adc_samp[i] - lo) / (hi - lo) * (y1 - y0));
+        if (px >= 0) {
+            gpu_line(px, py, sx, py, gpu_rgb(255, 210, 60));
+            gpu_line(sx, py, sx, sy, gpu_rgb(255, 210, 60));
+        }
+        px = sx;
+        py = sy;
+    }
+    gpu_text(12, 10, "DAC: original + steps", gpu_rgb(255, 255, 255));
+    gpu_present();
+    printf("overlay on canvas (stays until next graph)\n");
 }
 
 void cmd_freq(const char *args) {

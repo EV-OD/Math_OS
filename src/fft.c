@@ -5,6 +5,27 @@ int fft_valid_n(int n) {
     return n >= 16 && n <= 256 && (n & (n - 1)) == 0;
 }
 
+int dft_valid_n(int n) {
+    return n >= 8 && n <= 256;
+}
+
+void dft_direct(Complex *x, int n) {
+    static Complex tmp[256];
+    for (int k = 0; k < n; k++) {
+        float sr = 0, si = 0;
+        for (int i = 0; i < n; i++) {
+            float ang = -2.0f * K_PI * (float)(k * i) / (float)n;
+            float c = k_cos(ang);
+            float s = k_sin(ang);
+            sr += x[i].re * c - x[i].im * s;
+            si += x[i].re * s + x[i].im * c;
+        }
+        tmp[k].re = sr;
+        tmp[k].im = si;
+    }
+    for (int k = 0; k < n; k++) x[k] = tmp[k];
+}
+
 float fft_mag(Complex c) {
     return k_sqrt(c.re * c.re + c.im * c.im);
 }
