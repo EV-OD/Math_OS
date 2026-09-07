@@ -118,61 +118,105 @@ static void layout_window(int win){
     if(root>=0) layout_node(root, cx0, cy0, cx1-cx0, cy1-cy0);
 }
 static void render_pane_chrome(int is_focused, pane_t *p){
-    uint32_t col = p->is_canvas ? 0x2BD97C : (is_focused ? 0xE8ECF5 : 0x11162B);
+    uint32_t col = p->is_canvas ? 0x2BD97C : (is_focused ? 0x2BD97C : 0x2A2E4A);
     draw_rect(p->x, p->y, p->w, 2, col);
     draw_rect(p->x, p->y+p->h-2, p->w, 2, col);
     draw_rect(p->x, p->y, 2, p->h, col);
     draw_rect(p->x+p->w-2, p->y, 2, p->h, col);
-    if(p->is_canvas){
-        char lab[16];
-        sprintf(lab,"canvas %d", p->canvas_id);
-        int prev=display_current();
-        display_select(p->id);
-        uint32_t sx=p->x+6, sy=p->y+4;
-        display_set_fg(0x8A93B2);
-        display_text_at(sx,sy,lab);
-        display_set_fg(0xE8ECF5);
-        display_select(prev);
-    }
+    char lab[24];
+    if(p->is_canvas) sprintf(lab,"canvas %d", p->canvas_id);
+    else sprintf(lab,"shell %d", p->id);
+    int prev=display_current();
+    display_select(p->id);
+    uint32_t sx=p->x+8, sy=p->y+6;
+    uint32_t bg = is_focused ? col : 0x1A1F3A;
+    draw_rect(sx-4, sy-2, (uint32_t)strlen(lab)*18+8, 20, bg);
+    display_set_fg(is_focused ? 0x0B1020 : 0xE8ECF5);
+    display_set_bg(bg);
+    display_text_at(sx,sy,lab);
+    display_set_fg(0xE8ECF5);
+    display_set_bg(0x0B1020);
+    display_select(prev);
 }
 static void tmux_render(void){
     uint32_t W=display_width(), H=display_height();
     draw_rect(0,0,W,BAR_H,0x16213E);
     draw_rect(0,BAR_H-2,W,2,0x2BD97C);
+    int prev0=display_current();
+    display_select(0);
+    display_set_fg(0xE8ECF5);
+    display_set_bg(0x16213E);
     display_text_at(12,4,"MyOS // tmux");
     char wb[64];
     sprintf(wb,"win %d/%d", cur_window, MAX_WINDOWS);
     display_text_at(W-120,4,wb);
+    display_set_bg(0x0B1020);
+    display_select(prev0);
+    draw_rect(0,BAR_H,W,H-2*BAR_H,0x0B1020);
     int win = cur_window;
     int pane_count=0;
     for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==win) pane_count++;
     for(int i=0;i<MAX_PANES;i++) if(panes[i].active && panes[i].window==win){
         int foc = (panes[i].id==windows[win].focused);
+        draw_rect(panes[i].x, panes[i].y, panes[i].w, panes[i].h, 0x0B1020);
         if(!panes[i].is_canvas){
             display_render(i);
             render_pane_chrome(foc, &panes[i]);
         }else{
-            render_pane_chrome(foc, &panes[i]);
             int vx=panes[i].x+2, vy=panes[i].y+2, vw=panes[i].w-4, vh=panes[i].h-4;
             gpu_set_view(vx,vy,vw,vh);
+            gpu_clear(0x0B1020);
+            gpu_text(10,10,"canvas",0x8A93B2);
+            char lab[16]; sprintf(lab,"%d", panes[i].canvas_id);
+            gpu_text(80,10,lab,0x2BD97C);
+            gpu_present();
+            render_pane_chrome(foc, &panes[i]);
         }
     }
     draw_rect(0,H-BAR_H,W,BAR_H,0x11162B);
     draw_rect(0,H-BAR_H,W,2,0x2BD97C);
-    char status[128];
-    int off=0;
-    off+=sprintf(status+off," ");
+    int sx=12;
     for(int i=0;i<MAX_WINDOWS;i++) if(windows[i].active){
-        char tmp[32];
         int iscur=i==cur_window;
-        sprintf(tmp,"%s%d:%s%s ", iscur?"*":" ", i, windows[i].name, iscur?"*":"");
-        int l=strlen(tmp);
-        if(off+l<120) { strcpy(status+off, tmp); off+=l; }
+        char tmp[16];
+        sprintf(tmp," %d:%s ", i, windows[i].name);
+        uint32_t bg = iscur ? 0x2BD97C : 0x1A1F3A;
+        uint32_t fg = iscur ? 0x0B1020 : 0x8A93B2;
+        int tw = (int)strlen(tmp)*18;
+        draw_rect(sx, H-BAR_H+8, tw, 24, bg);
+        int prev=display_current();
+        display_select(0);
+        display_set_fg(fg);
+        display_set_bg(bg);
+        display_text_at(sx+2, H-BAR_H+10, tmp);
+        display_set_fg(0xE8ECF5);
+        display_set_bg(0x0B1020);
+        display_select(prev);
+        sx+=tw+6;
     }
     char extra[64];
-    sprintf(extra," | panes %d | %s", pane_count, prefix?"PREFIX":"");
-    strcpy(status+off, extra);
-    display_text_at(12,H-BAR_H+4,status);
+    sprintf(extra,"panes %d", pane_count);
+    int prev2=display_current();
+    display_select(0);
+    display_set_fg(0x8A93B2);
+    display_set_bg(0x11162B);
+    display_text_at(sx+10, H-BAR_H+10, extra);
+    display_set_fg(0xE8ECF5);
+    display_set_bg(0x0B1020);
+    display_select(prev2);
+    if(prefix){
+        const char *pfx=" PREFIX ";
+        int pw=(int)strlen(pfx)*18;
+        draw_rect(W-pw-12, H-BAR_H+8, pw, 24, 0xFFD60A);
+        int prev=display_current();
+        display_select(0);
+        display_set_fg(0x0B1020);
+        display_set_bg(0xFFD60A);
+        display_text_at(W-pw-10, H-BAR_H+10, (char*)pfx);
+        display_set_fg(0xE8ECF5);
+        display_set_bg(0x0B1020);
+        display_select(prev);
+    }
 }
 static int create_pane_for_window(int win){
     int pid=alloc_pane();
