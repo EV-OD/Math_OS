@@ -1,4 +1,4 @@
-# MyOS — a tiny multitasking OS with tmux UI and MATLAB-like math
+# MathOS — a tiny multitasking OS with tmux UI and MATLAB-like math
 
 Bare-metal 32-bit x86 OS booted via GRUB multiboot. Preemptive multitasking,
 a tmux-style tiled shell/canvas UI, and a MATLAB-like engine for plotting,
