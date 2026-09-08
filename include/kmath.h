@@ -16,6 +16,7 @@ float k_fabs(float x);
 float k_floor(float x);
 float k_ceil(float x);
 float k_fmod(float a, float b);
+float k_atan2(float y, float x);
 int k_isfinite(float x);
 
 #endif

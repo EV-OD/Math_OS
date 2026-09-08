@@ -11,6 +11,12 @@ void cmd_freq(const char *args);
 void cmd_dft(const char *args);
 void cmd_adc(const char *args);
 void cmd_dac(const char *args);
+void cmd_fir(const char *args);
+void cmd_iir(const char *args);
+void cmd_freqz(const char *args);
+void cmd_pz(const char *args);
+void cmd_filter(const char *args);
+void cmd_afft(const char *args);
 
 void mat_set_target(int cid);
 void mat_view_get(int cid, float *a, float *b);

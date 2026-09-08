@@ -15,6 +15,7 @@
 #include <gpu.h>
 #include <ui.h>
 #include <tmux.h>
+#include <fs.h>
 
 static void kernel_init(multiboot_info_t* mb_info){
   log_init();
@@ -36,6 +37,8 @@ static void kernel_init(multiboot_info_t* mb_info){
   process_init();
   timer_init(100);
   log_debug("timer ready");
+  fs_init();
+  log_debug("ram fs ready");
   ui_chrome();
 }
 

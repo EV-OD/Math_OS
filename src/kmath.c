@@ -112,6 +112,12 @@ float k_ceil(float x) {
     return -k_floor(-x);
 }
 
+float k_atan2(float y, float x) {
+    float r;
+    __asm__ volatile("fpatan" : "=t"(r) : "0"(x), "u"(y));
+    return r;
+}
+
 float k_fmod(float a, float b) {
     if (b == 0.0f) {
         float z = a - a;
